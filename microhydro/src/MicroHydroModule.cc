@@ -1,42 +1,39 @@
 ﻿// -*- tab-width: 2; indent-tabs-mode: nil; coding: utf-8-with-signature -*-
 //-----------------------------------------------------------------------------
-// Copyright 2000-2022 CEA (www.cea.fr) IFPEN (www.ifpenergiesnouvelles.com)
+// Copyright 2000-2025 CEA (www.cea.fr) IFPEN (www.ifpenergiesnouvelles.com)
 // See the top-level COPYRIGHT file for details.
 // SPDX-License-Identifier: Apache-2.0
 //-----------------------------------------------------------------------------
 /*---------------------------------------------------------------------------*/
-/* MicroHydroModule.cc                                         (C) 2000-2022 */
+/* MicroHydroModule.cc                                         (C) 2000-2025 */
 /*                                                                           */
 /* Bench MicroHydro.                                                         */
 /*---------------------------------------------------------------------------*/
 /*---------------------------------------------------------------------------*/
 
-#include "arcane/ISubDomain.h"
-#include "arcane/IMesh.h"
-#include "arcane/MathUtils.h"
-#include "arcane/ITimeLoopMng.h"
-#include "arcane/VariableTypes.h"
-#include "arcane/ItemEnumerator.h"
-#include "arcane/IParallelMng.h"
-#include "arcane/ModuleFactory.h"
-#include "arcane/ItemPrinter.h"
-#include "arcane/ITimeStats.h"
-
-#include <arcane/ISimpleTableOutput.h>
-#include <arcane/ISimpleTableComparator.h>
 #include <arcane/utils/ApplicationInfo.h>
 #include <arcane/utils/CommandLineArguments.h>
+#include "arcane/utils/MemoryUtils.h"
 
-#include "arcane/accelerator/core/IAcceleratorMng.h"
+#include "arcane/core/ISubDomain.h"
+#include "arcane/core/IMesh.h"
+#include "arcane/core/MathUtils.h"
+#include "arcane/core/ITimeLoopMng.h"
+#include "arcane/core/VariableTypes.h"
+#include "arcane/core/ItemEnumerator.h"
+#include "arcane/core/IParallelMng.h"
+#include "arcane/core/ModuleFactory.h"
+#include "arcane/core/ItemPrinter.h"
+#include "arcane/core/ITimeStats.h"
+#include <arcane/core/ISimpleTableOutput.h>
+#include <arcane/core/ISimpleTableComparator.h>
+#include <arcane/core/UnstructuredMeshConnectivity.h>
 
-#include "arcane/mesh/ItemFamily.h"
-
-#include "arcane/UnstructuredMeshConnectivity.h"
-
-#include "arcane/accelerator/Reduce.h"
-#include "arcane/accelerator/Runner.h"
-#include "arcane/accelerator/VariableViews.h"
-#include "arcane/accelerator/RunCommandEnumerate.h"
+#include <arcane/accelerator/core/IAcceleratorMng.h>
+#include <arcane/accelerator/core/Runner.h>
+#include <arcane/accelerator/Reduce.h>
+#include <arcane/accelerator/VariableViews.h>
+#include <arcane/accelerator/RunCommandEnumerate.h>
 
 #include "MicroHydroTypes.h"
 #include "MicroHydro_axl.h"
@@ -106,6 +103,8 @@ class MicroHydroModule
   void applyEquationOfState();
   void computeDeltaT();
 
+  void _computeNodeIndexInCells();
+
  private:
 
   ITimeStats* m_time_stats = nullptr;
@@ -114,7 +113,8 @@ class MicroHydroModule
   //! Indice de chaque noeud dans la maille
   UniqueArray<Int16> m_node_index_in_cells;
 
-  ax::Runner* m_runner = nullptr;
+  Runner m_runner;
+  RunQueue m_default_queue;
 
   UnstructuredMeshConnectivityView m_connectivity_view;
   UniqueArray<BoundaryCondition> m_boundary_conditions;
@@ -126,12 +126,11 @@ class MicroHydroModule
  private:
 
   void _specialInit();
-  void _computeNodeIndexInCells();
   void _doCall(const char* func_name, std::function<void()> func);
   void computeGeometricValues2();
 
   void cellScalarPseudoViscosity();
-  ARCCORE_HOST_DEVICE inline void computeCQs(Real3 node_coord[8], Real3 face_coord[6], Span<Real3> cqs);
+  ARCCORE_HOST_DEVICE static inline void computeCQs(Real3 node_coord[8], Real3 face_coord[6], Span<Real3> cqs);
 };
 
 /*---------------------------------------------------------------------------*/
@@ -142,8 +141,8 @@ MicroHydroModule(const ModuleBuildInfo& sbi)
 : ArcaneMicroHydroObject(sbi)
 , m_time_stats(sbi.subDomain()->timeStats())
 , m_elapsed_timer(sbi.subDomain(), "MicroHydro", Timer::TimerReal)
-{
-}
+, m_node_index_in_cells(MemoryUtils::getDefaultDataAllocator())
+{}
 
 /*---------------------------------------------------------------------------*/
 /*---------------------------------------------------------------------------*/
@@ -155,7 +154,10 @@ void MicroHydroModule::
 hydroBuild()
 {
   info() << "Bench MicroHydro";
-  m_runner = acceleratorMng()->defaultRunner();
+  Runner *r = acceleratorMng()->defaultRunner();
+  if (r)
+    m_runner = *r;
+  m_default_queue = makeQueue(m_runner);
 }
 
 /*---------------------------------------------------------------------------*/
@@ -175,8 +177,7 @@ hydroStartInit()
   // Vérifie que les valeurs initiales sont correctes
   {
     Integer nb_error = 0;
-    auto queue = makeQueue(m_runner);
-    auto command = makeCommand(queue);
+    auto command = makeCommand(m_default_queue);
     auto in_pressure = ax::viewIn(command, m_pressure);
     auto in_adiabatic_cst = ax::viewIn(command, m_adiabatic_cst);
     ax::VariableCellRealInView in_density = ax::viewIn(command, m_density);
@@ -830,31 +831,40 @@ hydroInit()
 void MicroHydroModule::
 _computeNodeIndexInCells()
 {
-  info() << "ComputeNodeIndexInCells";
-  // Un noeud est connecté au maximum à MAX_NODE_CELL mailles
-  // Calcul pour chaque noeud son index dans chacune des
+  info() << "ComputeNodeIndexInCells with accelerator";
+  // Un nœud est connecté au maximum à MAX_NODE_CELL mailles
+  // Calcule pour chaque nœud son index dans chacune des
   // mailles à laquelle il est connecté.
   NodeGroup nodes = allNodes();
   Integer nb_node = nodes.size();
-  m_node_index_in_cells.resize(MAX_NODE_CELL * nb_node);
-  m_node_index_in_cells.fill(-1);
+  m_node_index_in_cells.resize(MAX_NODE_CELL*nb_node);
+
   auto node_cell_cty = m_connectivity_view.nodeCell();
   auto cell_node_cty = m_connectivity_view.cellNode();
-  ENUMERATE_NODE (inode, nodes) {
-    NodeLocalId node = *inode;
-    Int32 index = 0;
+
+  auto command = makeCommand(m_default_queue);
+  auto inout_node_index_in_cells = m_node_index_in_cells.span();
+
+  command << RUNCOMMAND_ENUMERATE(Node,node,nodes)
+  {
     Int32 first_pos = node.localId() * MAX_NODE_CELL;
-    for (CellLocalId cell : node_cell_cty.cells(node)) {
-      Int16 node_index_in_cell = 0;
-      for (NodeLocalId cell_node : cell_node_cty.nodes(cell)) {
-        if (cell_node == node)
+
+    Int32 index = 0;
+    for( CellLocalId cell : node_cell_cty.cells(node) ){
+      Int8 node_index_in_cell = 0;
+      for( NodeLocalId cell_node : cell_node_cty.nodes(cell) ){
+        if (cell_node==node)
           break;
         ++node_index_in_cell;
       }
-      m_node_index_in_cells[first_pos + index] = node_index_in_cell;
+      inout_node_index_in_cells[first_pos + index] = node_index_in_cell;
       ++index;
     }
-  }
+
+    // Remplit avec la valeur nulle les derniers éléments
+    for( ; index<MAX_NODE_CELL; ++index )
+      inout_node_index_in_cells[first_pos + index] = -1;
+  };
 }
 
 /*---------------------------------------------------------------------------*/

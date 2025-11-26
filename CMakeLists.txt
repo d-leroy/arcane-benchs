@@ -17,6 +17,7 @@ set (BUILD_SHARED_LIBS TRUE)
 # ----------------------------------------------------------------------------
 
 find_package(Arcane REQUIRED)
+message(STATUS "Arcane Version = ${Arcane_VERSION}")
 
 # ----------------------------------------------------------------------------
 
