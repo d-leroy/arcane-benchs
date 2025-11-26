@@ -219,11 +219,19 @@ class AccMemAdviser {
 
   bool enable() const { return m_enable; }
 
-  template<typename ViewType>
-  void setReadMostly(ViewType view) {
+  template <typename ViewType>
+  void setReadMostly(ViewType view)
+  {
 #ifdef ARCANE_COMPILING_CUDA
     if (m_enable && view.size()) {
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 13000
+      cudaMemLocation mem_location;
+      mem_location.type = cudaMemLocationTypeDevice;
+      mem_location.id = m_device;
+      cudaMemAdvise (view.data(), view.size(), cudaMemAdviseSetReadMostly, mem_location);
+#else
       cudaMemAdvise (view.data(), view.size(), cudaMemAdviseSetReadMostly,m_device);
+#endif
     }
 #endif
   }
