@@ -1,10 +1,12 @@
 #include "msgpass/VarSyncMng.h"
 #include "msgpass/PackTransfer.h"
 
-#include <arcane/IParallelMng.h>
-#include <arcane/MeshVariableScalarRef.h>
-#include <arcane/MeshVariableArrayRef.h>
-#include <arcane/VariableBuildInfo.h>
+#include <arcane/core/IParallelMng.h>
+#include <arcane/core/MeshVariableScalarRef.h>
+#include <arcane/core/MeshVariableArrayRef.h>
+#include <arcane/core/VariableBuildInfo.h>
+
+#include <arcane/accelerator/AcceleratorUtils.h>
 
 /*---------------------------------------------------------------------------*/
 /* Equivalent à un var.synchronize() où var est une variable globale         */ 
@@ -78,22 +80,24 @@ void VarSyncMng::globalSynchronizeDevQueues(MeshVariableRefT var)
     async_transfer(byte_buf_snd_h, byte_buf_snd_d, queue);
   }
 
-#ifdef ARCANE_COMPILING_CUDA
+#if defined(ARCANE_COMPILING_CUDA)
   // On récupère les streams CUDA
-  UniqueArray<cudaStream_t*> pack_streams(m_nb_nei);
-  UniqueArray<cudaStream_t*> pack_streams2(m_nb_nei);
+  UniqueArray<cudaStream_t> pack_streams(m_nb_nei);
+  UniqueArray<cudaStream_t> pack_streams2(m_nb_nei);
   UniqueArray<Integer> pack_nei(m_nb_nei);
   UniqueArray<Integer> pack_nei2(m_nb_nei);
   for(Integer inei=0 ; inei<m_nb_nei ; ++inei) {
-    auto* rq = m_neigh_queues->queue(inei)._internalStream();
-    pack_streams[inei] = reinterpret_cast<cudaStream_t*>(rq->_internalImpl());
+    cudaStream_t rq = Arcane::Accelerator::AcceleratorUtils::toCudaNativeStream(m_neigh_queues->queue(inei));
+    pack_streams[inei] = rq;
+    //auto *rq = m_neigh_queues->queue(inei)._internalStream();
+    //pack_streams[inei] = reinterpret_cast<cudaStream_t*>(rq->_internalImpl());
     pack_nei[inei] = inei;
   }
 
   Integer nb_pend_stream=m_nb_nei; // Nb de streams pending, non synchronisés
-  ArrayView<cudaStream_t*> pend_streams(pack_streams.view());
-  ArrayView<cudaStream_t*> upd_pend_streams(pack_streams2.view());
-  ArrayView<cudaStream_t*> tmp_pend_streams;
+  ArrayView<cudaStream_t> pend_streams(pack_streams.view());
+  ArrayView<cudaStream_t> upd_pend_streams(pack_streams2.view());
+  ArrayView<cudaStream_t> tmp_pend_streams;
 
   // Pour faire la correspondance avec le numéro du voisin
   ArrayView<Integer> pend_nei(pack_nei.view());
@@ -112,7 +116,7 @@ void VarSyncMng::globalSynchronizeDevQueues(MeshVariableRefT var)
     while(done_streams==0) {
       // On parcourt tous les streams pour savoir lesquels sont terminés
       for(Integer ipend=0 ; ipend<nb_pend_stream ; ++ipend) {
-        if (cudaStreamQuery(*pend_streams[ipend])==cudaSuccess) {
+        if (cudaStreamQuery(pend_streams[ipend])==cudaSuccess) {
           query_streams[ipend]=true;
           done_streams++;
         }
