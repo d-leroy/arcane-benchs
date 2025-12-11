@@ -5,6 +5,13 @@
     <timeloop>MicroHydroLoop</timeloop>
   </arcane>
 
+  <!-- <arcane-post-traitement>
+		<frequence-sortie>1</frequence-sortie>
+		<depouillement>
+			<variable>Density</variable>
+		</depouillement>
+	</arcane-post-traitement> -->
+
   <meshes>
     <mesh>
       <!-- La validite numerique suppose que le maillage est 100x15x15.
@@ -21,6 +28,14 @@
         <y><n>15</n><length>0.3</length></y>
         <z><n>15</n><length>0.3</length></z>
       </generator>
+      <!-- <generator name="Cartesian2D" >
+        <nb-part-x>1</nb-part-x> 
+        <nb-part-y>1</nb-part-y>
+        <origin>1.0 2.0</origin>
+        <generate-sod-groups>true</generate-sod-groups>
+        <x><n>4</n><length>1.0</length></x>
+        <y><n>4</n><length>1.0</length></y>
+      </generator> -->
 
       <initialization>
         <variable><name>Density</name><value>1.0</value><group>ZG</group></variable>

@@ -1,0 +1,7 @@
+.cache
+build
+output
+mtx
+
+fatal_*
+signal_*
