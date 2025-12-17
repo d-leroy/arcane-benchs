@@ -42,36 +42,52 @@ void CSR::fromCoordinates(const Int32 *rows, const Int32 *cols, const Int32 nnz)
 CSR *CSR::transpose() const {
   CSR *result = new CSR(N, M);
   result->nnz = nnz;
-  result->rpt = new NumArray<Int32, MDDim1>(N + 1);
-  result->col = new NumArray<Int32, MDDim1>(nnz);
+  result->rpt = new NumArray<Int32, MDDim1>(N + 1, rpt->memoryResource());
+  result->col = new NumArray<Int32, MDDim1>(nnz, col->memoryResource());
+
+  auto from_rpt = new NumArray<Int32, MDDim1>(M + 1, eMemoryResource::Host);
+  auto from_col = new NumArray<Int32, MDDim1>(nnz, eMemoryResource::Host);
+
+  from_rpt->copy(*rpt);
+  from_col->copy(*col);
+
+  auto to_rpt = new NumArray<Int32, MDDim1>(N + 1, eMemoryResource::Host);
+  auto to_col = new NumArray<Int32, MDDim1>(nnz, eMemoryResource::Host);
 
   long *p = new long[nnz];
   Int32 *I_ = new Int32[nnz];
 
   // Converting from compressed sparse row to transposed coordinates.
   for (Int32 i = 0; i < M; ++i) {
-    for (Int32 j = (*rpt)[i]; j < (*rpt)[i + 1]; ++j) {
-      p[j] = (long int)M * (*col)[j] + i;
+    for (Int32 j = (*from_rpt)[i]; j < (*from_rpt)[i + 1]; ++j) {
+      p[j] = (long int)M * (*from_col)[j] + i;
     }
   }
 
   std::sort(p, p + nnz);
   for (Int32 i = 0; i < nnz; ++i) {
     I_[i] = p[i] / M;
-    (*result->col)[i] = p[i] % M;
+    (*to_col)[i] = p[i] % M;
   }
   delete[] p;
 
   // Converting from coordinates back to compressed sparse row.
-  result->rpt->fill(0);
+  to_rpt->fill(0);
   for (Int32 i = 0; i < nnz; ++i) {
-    (*result->rpt)[I_[i] + 1]++;
+    (*to_rpt)[I_[i] + 1]++;
   }
   for (Int32 i = 1; i <= N; ++i) {
-    (*result->rpt)[i] += (*result->rpt)[i - 1];
+    (*to_rpt)[i] += (*to_rpt)[i - 1];
   }
 
+  result->rpt->copy(*to_rpt);
+  result->col->copy(*to_col);
+
   delete[] I_;
+  delete from_rpt;
+  delete from_col;
+  delete to_rpt;
+  delete to_col;
 
   return result;
 }
@@ -97,31 +113,44 @@ std::string CSR::printCols() const {
 }
 
 std::string CSR::printMatrix() const {
+  auto rows = new NumArray<Int32, MDDim1>(N + 1, eMemoryResource::Host);
+  auto cols = new NumArray<Int32, MDDim1>(nnz, eMemoryResource::Host);
+  rows->copy(*rpt);
+  cols->copy(*col);
+
   std::stringstream sstream;
   sstream << "Matrix:" << std::endl;
   for (Int32 row = 0; row < M; row++) {
-    Int32 begin = (*rpt)[row];
-    Int32 end = (*rpt)[row + 1];
+    Int32 begin = (*rows)[row];
+    Int32 end = (*rows)[row + 1];
 
     for (Int32 i = begin; i < end; i++) {
-      sstream << row << " " << (*col)[i] << std::endl;
+      sstream << row << " " << (*cols)[i] << std::endl;
     }
   }
   return sstream.str();
 }
 
 void CSR::dumpMatrix(std::ofstream &file) const {
+  auto rows = new NumArray<Int32, MDDim1>(N + 1, eMemoryResource::Host);
+  auto cols = new NumArray<Int32, MDDim1>(nnz, eMemoryResource::Host);
+  rows->copy(*rpt);
+  cols->copy(*col);
+
   file << "%%MatrixMarket matrix coordinate pattern general" << std::endl;
-  file << M << " " << N << " " << (*rpt)[M] << std::endl;
+  file << M << " " << N << " " << (*rows)[M] << std::endl;
 
   for (Int32 row = 0; row < M; row++) {
-    Int32 begin = (*rpt)[row];
-    Int32 end = (*rpt)[row + 1];
+    Int32 begin = (*rows)[row];
+    Int32 end = (*rows)[row + 1];
 
     for (Int32 i = begin; i < end; i++) {
-      file << row << " " << (*col)[i] << std::endl;
+      file << row << " " << (*cols)[i] << std::endl;
     }
   }
+
+  delete rows;
+  delete cols;
 }
 
 CSR::~CSR() {

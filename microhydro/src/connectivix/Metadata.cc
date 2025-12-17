@@ -19,9 +19,13 @@ void Metadata::allocate_rpt(CSR &C) {
   N = C.N;
   if (is_acc) {
     C.rpt = new NumArray<Int32, MDDim1>(C.M + 1, eMemoryRessource::Device);
+    total_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::HostPinned);
+    max_row_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::HostPinned);
     scan_storage = C.rpt;
   } else {
     C.rpt = new NumArray<Int32, MDDim1>(C.M + 1, eMemoryRessource::Host);
+    total_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::Host);
+    max_row_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::Host);
     scan_storage = new NumArray<Int32, MDDim1>(C.M + 1, eMemoryRessource::Host);
   }
 }
@@ -30,12 +34,10 @@ void Metadata::allocate(ax::Runner &runner) {
   if (is_acc) {
     bins = new NumArray<Int32, MDDim1>(M, eMemoryRessource::Device);
     bin_size = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::HostPinned);
-    total_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::HostPinned);
     bin_offset = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::HostPinned);
   } else {
     bins = new NumArray<Int32, MDDim1>(M, eMemoryRessource::Host);
     bin_size = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::Host);
-    total_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::Host);
     bin_offset = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::Host);
   }
 }
@@ -49,15 +51,19 @@ void Metadata::release() {
     run_queues = nullptr;
   }
 
-  delete bins;
-  delete bin_size;
-  delete total_nnz;
-  delete bin_offset;
-  if (is_acc) {
-    scan_storage = nullptr;
-  } else {
-    delete scan_storage;
-  }
+  // std::cout << "Freeing bins" << std::endl;
+  // delete bins;
+  // std::cout << "Freeing bin_size" << std::endl;
+  // delete bin_size;
+  // std::cout << "Freeing total_nnz" << std::endl;
+  // delete total_nnz;
+  // std::cout << "Freeing bin_offset" << std::endl;
+  // delete bin_offset;
+  // if (is_acc) {
+  //   scan_storage = nullptr;
+  // } else {
+  //   delete scan_storage;
+  // }
 }
 
 ax::RunQueue &Metadata::get_run_queue(Int32 queue_index) {

@@ -83,8 +83,8 @@ void ConnectivityMatMul::numericPartialWarpSharedHashTable(Int32 bin_index) {
   const Int32 bin_size = (*m_meta->bin_size)[bin_index];
 
   constexpr Int32 group_size = NUMERIC_PWARP_ROWS * NUMERIC_PWARP;
-  constexpr Int32 tsize = NUMERIC_PWARP_TSIZE - 1;
   const Int32 nb_groups = div_up(bin_size, NUMERIC_PWARP_ROWS);
+  constexpr Int32 tsize = NUMERIC_PWARP_TSIZE - 1;
 
   auto command = makeCommand(queue);
   auto arpt_view = ax::viewIn(command, *m_A.rpt);
@@ -101,24 +101,16 @@ void ConnectivityMatMul::numericPartialWarpSharedHashTable(Int32 bin_index) {
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, nb_groups * group_size, nb_groups, group_size);
 
-  // std::cout << std::endl;
-  // std::cout << "===========================================" << std::endl;
-  // std::cout << "================= NUMERIC =================" << std::endl;
-  // std::cout << "===========================================" << std::endl;
-  // std::cout << std::endl;
-
   command << RUNCOMMAND_LAUNCH(ctx, loop_range, shared_hash, shared_col, shared_offset) {
     auto work_group = ctx.group();
     const Int32 group_rank = work_group.groupRank();
     const Int32 group_size = work_group.groupSize();
 
-    // std::cout << "================= GROUP RANK: " << group_rank << " =================" << std::endl;
-
     auto local_hash = shared_hash.span();
     auto local_col = shared_col.span();
     auto local_offset = shared_offset.span();
 
-    if constexpr (work_group.isDevice()) {
+    if (work_group.isDevice()) {
       const Int32 item_rank = work_group.activeWorkItemRankInGroup();
       const auto work_item = work_group.activeItem(0);
       const Int32 i = work_item.linearIndex();
@@ -147,7 +139,7 @@ void ConnectivityMatMul::numericPartialWarpSharedHashTable(Int32 bin_index) {
           bcol = bcol_view[k];
           hash = (bcol * HASH_SCALE) % tsize;
           while (1) {
-            old = atomicCAS(&local_hash[table_offset + hash], -1, bcol);
+            old = ax::doAtomicCAS(&local_hash[table_offset + hash], -1, bcol);
             if (old == -1 || old == bcol) {
               break;
             } else {
@@ -222,29 +214,16 @@ void ConnectivityMatMul::numericPartialWarpSharedHashTable(Int32 bin_index) {
         rid = bins_view[rid];
         Int32 j, k, acol, bcol, hash, old;
 
-        if (arpt_view[rid] + tid < arpt_view[rid + 1]) {
-          // std::cout << std::endl;
-          // std::cout << "================= Row ID: " << rid << " [" << tid << "] =================" << std::endl;
-        }
-
         for (j = arpt_view[rid] + tid; j < arpt_view[rid + 1]; j += NUMERIC_PWARP) { // pwarp per row, thread per a item, thread per b row
-          // std::cout << "  column at index " << j << std::endl;
           acol = acol_view[j];
-          // std::cout << "  A(" << rid << "," << acol << ")" << std::endl;
           for (k = brpt_view[acol]; k < brpt_view[acol + 1]; ++k) { // thread per b row
             bcol = bcol_view[k];
-            // std::cout << "  B(" << acol << "," << bcol << ")" << std::endl;
             hash = (bcol * HASH_SCALE) % tsize;
-            // std::cout << "  hash = " << hash << std::endl;
             while (1) {
-              old = atomicCAS(&local_hash[table_offset + hash], -1, bcol);
+              old = ax::doAtomicCAS(&local_hash[table_offset + hash], -1, bcol);
               if (old == -1 || old == bcol) {
-                // std::cout << "  => Product A(" << rid << "," << acol << ") x B(" << acol << "," << bcol << ") for C(" << rid << "," << bcol << ")" << std::endl;
-                // std::cout << "Hash table at " << table_offset << ": ";
                 for (Int32 x = 0; x < tsize; ++x) {
-                  // std::cout << local_hash[table_offset + x] << " ";
                 }
-                // std::cout << std::endl;
                 break;
               } else {
                 hash = (hash + 1) < tsize ? hash + 1 : 0;
@@ -270,18 +249,14 @@ void ConnectivityMatMul::numericPartialWarpSharedHashTable(Int32 bin_index) {
         const Int32 table_offset = block_rid * tsize;
 
         rid = bins_view[rid];
-        // std::cout << "================= Row ID: " << rid << " [" << tid << "] =================" << std::endl;
 
-        // std::cout << "Hash table at " << table_offset << ": ";
         for (Int32 x = 0; x < tsize; ++x) {
-          // std::cout << local_hash[table_offset + x] << " ";
         }
-        // std::cout << std::endl;
 
-        Int32 j, k, acol, offset;
+        Int32 j, acol, offset;
         bool valid;
 
-        if constexpr (work_group.isDevice()) {
+        if (work_group.isDevice()) {
           // #pragma unroll
           for (j = 0; j < tsize; j += NUMERIC_PWARP) {
             offset = tid + j;
@@ -303,15 +278,12 @@ void ConnectivityMatMul::numericPartialWarpSharedHashTable(Int32 bin_index) {
         } else {
           for (j = 0; j < tsize; j += NUMERIC_PWARP) {
             offset = tid + j;
-            // std::cout << "  Offset " << offset << std::endl;
             valid = offset < tsize;
             if (valid) {
               acol = local_hash[table_offset + offset];
               // If there's a column in the hash table at 'offset'
               if (acol != -1) {
                 offset = ax::doAtomicAdd(&local_offset[block_rid], 1);
-                // std::cout << "  Offset in columns: " << offset << std::endl;
-                // std::cout << "  Column:            " << acol << std::endl;
               }
             }
 
@@ -320,18 +292,6 @@ void ConnectivityMatMul::numericPartialWarpSharedHashTable(Int32 bin_index) {
             }
           }
         }
-
-        // std::cout << "Hash table at " << table_offset << ": ";
-        for (Int32 x = 0; x < tsize; ++x) {
-          // std::cout << local_hash[table_offset + x] << " ";
-        }
-        // std::cout << std::endl;
-
-        // std::cout << "Col table at " << table_offset << ": ";
-        for (Int32 x = 0; x < tsize; ++x) {
-          // std::cout << local_col[table_offset + x] << " ";
-        }
-        // std::cout << std::endl;
       }
 
       work_group.barrier();
@@ -351,8 +311,6 @@ void ConnectivityMatMul::numericPartialWarpSharedHashTable(Int32 bin_index) {
 
         rid = bins_view[rid];
         Int32 j, k, acol, offset;
-
-        // std::cout << "================= Row ID: " << rid << " [" << tid << "] =================" << std::endl;
 
         const Int32 c_offset = crpt_view[rid];
         const Int32 row_nnz = crpt_view[rid + 1] - crpt_view[rid];

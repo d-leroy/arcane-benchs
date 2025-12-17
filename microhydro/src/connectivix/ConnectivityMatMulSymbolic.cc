@@ -104,8 +104,6 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
   const ax::RunQueue &queue = *(m_meta->run_queues[bin_index].get());
   const Int32 bin_size = (*m_meta->bin_size)[bin_index];
 
-  // std::cout << "Bin size: " << bin_size << std::endl;
-
   const Int32 group_size = PWARP_ROWS * PWARP;
   const Int32 nb_groups = div_up(bin_size, PWARP_ROWS);
 
@@ -122,12 +120,6 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, nb_groups * group_size, nb_groups, group_size);
 
-  // std::cout << std::endl;
-  // std::cout << "============================================" << std::endl;
-  // std::cout << "================= SYMBOLIC =================" << std::endl;
-  // std::cout << "============================================" << std::endl;
-  // std::cout << std::endl;
-
   command << RUNCOMMAND_LAUNCH(ctx, loop_range, shared_table, shared_nnz) {
     auto work_group = ctx.group();
     // const Int32 group_rank = work_group.groupRank();
@@ -136,7 +128,7 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
     auto local_table = shared_table.span();
     auto local_nnz = shared_nnz.span();
 
-    if constexpr (work_group.isDevice()) {
+    if (work_group.isDevice()) {
       const Int32 item_rank = work_group.activeWorkItemRankInGroup();
       const auto work_item = work_group.activeItem(0);
       const Int32 i = work_item.linearIndex();
@@ -170,7 +162,7 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
           bcol = bcol_view[k];
           hash = (bcol * HASH_SCALE) & (PWARP_TSIZE - 1);
           while (1) {
-            old = atomicCAS(&table[hash], -1, bcol);
+            old = ax::doAtomicCAS(&table[hash], -1, bcol);
             if (old == -1) {
               ax::doAtomicAdd(&local_nnz[block_rid], 1);
               break;
@@ -239,7 +231,7 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
             hash = (bcol * HASH_SCALE) & (PWARP_TSIZE - 1);
             // std::cout << "  hash = " << hash << std::endl;
             while (1) {
-              old = atomicCAS(&local_table[table_offset + hash], -1, bcol);
+              old = ax::doAtomicCAS(&local_table[table_offset + hash], -1, bcol);
               if (old == -1) {
                 // std::cout << "  => Product A(" << rid << "," << acol << ") x B(" << acol << "," << bcol << ") for C(" << rid << "," << bcol << ")" << std::endl;
                 ax::doAtomicAdd(&local_nnz[block_rid], 1);

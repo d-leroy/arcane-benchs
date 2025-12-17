@@ -16,8 +16,8 @@ namespace ax = Arcane::Accelerator;
 namespace Connectivix {
 
 void ConnectivityMatMul::symbolicBinning() {
-  // We use nnz of C to store max row products.
-  if ((*m_C.rpt)[m_meta->M] <= 32) {
+  // We use total_nnz to store max row products.
+  if ((*m_meta->total_nnz)[0] <= 32) {
     symbolicBinningSmall();
 
     (*m_meta->bin_size)[0] = m_meta->M;
@@ -50,11 +50,14 @@ void ConnectivityMatMul::symbolicBinningSmall() {
     auto [i] = iter();
     bins_view[i] = i;
   };
+
+  queue->barrier();
 }
 
 void ConnectivityMatMul::symbolicBinningFirstPass() {
   const Int32 M = m_meta->M;
 
+  auto queue = m_meta->run_queues[0].get();
   auto command = makeCommand(m_meta->run_queues[0].get());
 
   auto row_flop_view = ax::viewIn(command, *m_C.rpt);
@@ -72,7 +75,7 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
     constexpr Int32 range[NUM_BIN] = {32, 512, 1024, 2048, 4096, 8192, 12287, INT_MAX};
     Int32 row_nnz, j;
 
-    if constexpr (work_group.isDevice()) {
+    if (work_group.isDevice()) {
       const Int32 item_rank = work_group.activeWorkItemRankInGroup();
       auto work_item = work_group.activeItem(0);
       Int32 i = work_item.linearIndex();
@@ -124,11 +127,14 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
       }
     }
   };
+
+  queue->barrier();
 }
 
 void ConnectivityMatMul::symbolicBinningSecondPass() {
   const Int32 M = m_meta->M;
 
+  auto queue = m_meta->run_queues[0].get();
   auto command = makeCommand(m_meta->run_queues[0].get());
 
   auto row_flop_view = ax::viewIn(command, *m_C.rpt);
@@ -148,7 +154,7 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
     constexpr Int32 range[NUM_BIN] = {32, 512, 1024, 2048, 4096, 8192, 12287, INT_MAX};
     Int32 row_nnz, j;
 
-    if constexpr (work_group.isDevice()) {
+    if (work_group.isDevice()) {
       const Int32 item_rank = work_group.activeWorkItemRankInGroup();
       auto work_item = work_group.activeItem(0);
       Int32 i = work_item.linearIndex();
@@ -236,13 +242,14 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
       }
     }
   };
+
+  queue->barrier();
 }
 
 void ConnectivityMatMul::numericBinning() {
   numericBinningFirstPass();
 
-  // We use nnz of C to store max row nnz.
-  if ((*m_C.rpt)[m_meta->M] <= 32) {
+  if ((*m_meta->max_row_nnz)[0] <= 32) {
     numericBinningSmall();
 
     (*m_meta->bin_size)[0] = m_meta->M;
@@ -263,31 +270,23 @@ void ConnectivityMatMul::numericBinning() {
   }
 }
 
-void ConnectivityMatMul::numericBinningSmall() {
-  auto command = makeCommand(m_meta->run_queues[0].get());
-  auto bins_view = ax::viewOut(command, *m_meta->bins);
-
-  command << RUNCOMMAND_LOOP1(iter, m_meta->M) {
-    auto [i] = iter();
-    bins_view[i] = i;
-  };
-}
-
 void ConnectivityMatMul::numericBinningFirstPass() {
   const Int32 M = m_meta->M;
-  const Int32 group_size = 1024;
+  const Int32 group_size = 512; // FIXME! 1024;
   const Int32 nb_groups = div_up(M, group_size);
 
+  auto queue = m_meta->run_queues[0].get();
   auto command = makeCommand(m_meta->run_queues[0].get());
 
   auto row_nnz_view = ax::viewInOut(command, *m_C.rpt);
   auto bin_size_view = ax::viewInOut(command, *m_meta->bin_size);
   auto total_nnz_view = ax::viewInOut(command, *m_meta->total_nnz);
+  auto max_row_nnz_view = ax::viewInOut(command, *m_meta->max_row_nnz);
 
   ax::LocalMemory<Int32, NUM_BIN> shared_bin_size(command, NUM_BIN);
   ax::LocalMemory<Int32, 1> shared_local_nnz(command, 1);
   ax::LocalMemory<Int32, 1> shared_max_row_nnz(command, 1);
-  row_nnz_view[M] = 0;
+  max_row_nnz_view[0] = 0;
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, nb_groups * group_size, nb_groups, group_size);
 
@@ -300,7 +299,7 @@ void ConnectivityMatMul::numericBinningFirstPass() {
     constexpr Int32 range[NUM_BIN] = {31, 255, 511, 1022, 2047, 4095, 8191, INT_MAX};
     Int32 row_nnz, j;
 
-    if constexpr (work_group.isDevice()) {
+    if (work_group.isDevice()) {
       const Int32 item_rank = work_group.activeWorkItemRankInGroup();
       if (item_rank < NUM_BIN) {
         local_bin_size[item_rank] = 0;
@@ -338,8 +337,7 @@ void ConnectivityMatMul::numericBinningFirstPass() {
         ax::doAtomicAdd(total_nnz_view[0], local_local_nnz[0]);
       }
       if (item_rank == 64) {
-        // We use nnz of C to store max row nnz.
-        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(row_nnz_view[M], local_max_row_nnz[0]);
+        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_nnz_view[0], local_max_row_nnz[0]);
       }
     } else {
       for (Int32 b = 0; b < NUM_BIN; ++b) {
@@ -372,9 +370,24 @@ void ConnectivityMatMul::numericBinningFirstPass() {
         ax::doAtomicAdd(bin_size_view[b], local_bin_size[b]);
       }
       ax::doAtomicAdd(total_nnz_view[0], local_local_nnz[0]);
-      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(row_nnz_view[M], local_max_row_nnz[0]);
+      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_nnz_view[0], local_max_row_nnz[0]);
     }
   };
+
+  queue->barrier();
+}
+
+void ConnectivityMatMul::numericBinningSmall() {
+  auto queue = m_meta->run_queues[0].get();
+  auto command = makeCommand(queue);
+  auto bins_view = ax::viewOut(command, *m_meta->bins);
+
+  command << RUNCOMMAND_LOOP1(iter, m_meta->M) {
+    auto [i] = iter();
+    bins_view[i] = i;
+  };
+
+  queue->barrier();
 }
 
 void ConnectivityMatMul::numericBinningSecondPass() {
@@ -382,7 +395,8 @@ void ConnectivityMatMul::numericBinningSecondPass() {
   const Int32 group_size = 1024;
   const Int32 nb_groups = div_up(M, group_size);
 
-  auto command = makeCommand(m_meta->run_queues[0].get());
+  auto queue = m_meta->run_queues[0].get();
+  auto command = makeCommand(queue);
 
   auto row_nnz_view = ax::viewIn(command, *m_C.rpt);
   auto bin_offset_view = ax::viewInOut(command, *m_meta->bin_offset);
@@ -402,7 +416,7 @@ void ConnectivityMatMul::numericBinningSecondPass() {
     constexpr Int32 range[NUM_BIN] = {31, 255, 511, 1022, 2047, 4095, 8191, INT_MAX};
     Int32 row_nnz, j;
 
-    if constexpr (work_group.isDevice()) {
+    if (work_group.isDevice()) {
       const Int32 item_rank = work_group.activeWorkItemRankInGroup();
       if (item_rank < NUM_BIN) {
         local_bin_size[item_rank] = 0;
@@ -494,6 +508,8 @@ void ConnectivityMatMul::numericBinningSecondPass() {
       }
     }
   };
+
+  queue->barrier();
 }
 
 } // namespace Connectivix

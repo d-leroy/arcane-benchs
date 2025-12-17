@@ -33,11 +33,12 @@ void ConnectivityMatMul::doMatMul() {
 
   ax::Scanner<Int32>::exclusiveSum(&m_meta->get_run_queue(0), *m_C.rpt, *m_meta->scan_storage);
   m_meta->barrier();
+
   if (!is_acc) {
     m_C.rpt->swap(*m_meta->scan_storage);
   }
 
-  m_C.nnz = (*m_C.rpt)[m_C.M];
+  m_C.nnz = (*m_meta->total_nnz)[0];
   if (is_acc) {
     m_C.col = new NumArray<Int32, MDDim1>(m_C.nnz, eMemoryRessource::Device);
   } else {
@@ -55,7 +56,8 @@ void ConnectivityMatMul::setup() {
 
   auto command = makeCommand(m_meta->get_run_queue(0));
 
-  auto row_flop_view = ax::viewInOut(command, *m_C.rpt);
+  auto row_flop_view = ax::viewOut(command, *m_C.rpt);
+  auto max_flop_view = ax::viewInOut(command, *m_meta->max_row_nnz);
   auto arpt_view = ax::viewIn(command, *m_A.rpt);
   auto acol_view = ax::viewIn(command, *m_A.col);
   auto brpt_view = ax::viewIn(command, *m_B.rpt);
@@ -72,11 +74,10 @@ void ConnectivityMatMul::setup() {
     auto work_group = ctx.group();
     auto local_max_row_flop = shared_max_row_flop.span();
 
-    if constexpr (work_group.isDevice()) {
+    if (work_group.isDevice()) {
       const bool is_rank0 = (work_group.activeWorkItemRankInGroup() == 0);
       if (is_rank0) {
         local_max_row_flop[0] = 0;
-        row_flop_view[M] = 0;
       }
       work_group.barrier();
 
@@ -98,7 +99,7 @@ void ConnectivityMatMul::setup() {
       work_group.barrier();
 
       if (is_rank0) {
-        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(row_flop_view[M], local_max_row_flop[0]);
+        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_flop_view[0], local_max_row_flop[0]);
       }
     } else {
       local_max_row_flop[0] = 0;
@@ -119,7 +120,7 @@ void ConnectivityMatMul::setup() {
         ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&local_max_row_flop[0], row_flop);
       }
 
-      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(row_flop_view[M], local_max_row_flop[0]);
+      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_flop_view[0], local_max_row_flop[0]);
     }
   };
 }

@@ -8,20 +8,20 @@
 #define WSIZE 32
 
 #define PWARP 4
-#define PWARP_ROWS 256
+#define PWARP_ROWS 32 // 256
 #define PWARP_TSIZE 32
 #define PWARP_BLOCK_SIZE (PWARP * PWARP_ROWS)
 
 #define NUMERIC_PWARP 4
-#define NUMERIC_PWARP_ROWS 128
+#define NUMERIC_PWARP_ROWS 16 // 128
 #define NUMERIC_PWARP_TSIZE 32
 #define NUMERIC_PWARP_BLOCK_SIZE (NUMERIC_PWARP * NUMERIC_PWARP_ROWS)
 
 #define HASH_SINGLE
-//#define HASH_MULTI
+// #define HASH_MULTI
 
 // cannot define WARP, since thrust source code uses WARP
-//#define WARP 32
+// #define WARP 32
 
 #define SYMBOLIC_SCALE_SMALL 1
 #define SYMBOLIC_SCALE_LARGE 1
