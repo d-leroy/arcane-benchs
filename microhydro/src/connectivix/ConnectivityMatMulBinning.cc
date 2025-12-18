@@ -17,7 +17,7 @@ namespace Connectivix {
 
 void ConnectivityMatMul::symbolicBinning() {
   // We use total_nnz to store max row products.
-  if ((*m_meta->total_nnz)[0] <= 32) {
+  if ((*m_meta->max_row_nnz)[0] <= 32) {
     symbolicBinningSmall();
 
     (*m_meta->bin_size)[0] = m_meta->M;
@@ -41,7 +41,6 @@ void ConnectivityMatMul::symbolicBinning() {
 }
 
 void ConnectivityMatMul::symbolicBinningSmall() {
-  Int32 GS = div_up(m_meta->M, 1024);
   auto queue = m_meta->run_queues[0].get();
   auto command = makeCommand(queue);
   auto bins_view = ax::viewOut(command, *m_meta->bins);
@@ -108,7 +107,7 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
         auto work_item = work_group.activeItem(g);
-        Int32 i = work_item.linearIndex() + g;
+        Int32 i = work_item.linearIndex();
 
         if (i < M) {
           row_nnz = row_flop_view[i];
@@ -203,7 +202,7 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
         auto work_item = work_group.activeItem(g);
-        Int32 i = work_item.linearIndex() + g;
+        Int32 i = work_item.linearIndex();
 
         if (i < M) {
           row_nnz = row_flop_view[i];
@@ -225,7 +224,7 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
         auto work_item = work_group.activeItem(g);
-        Int32 i = work_item.linearIndex() + g;
+        Int32 i = work_item.linearIndex();
 
         Int32 index;
         if (i < M) {
@@ -283,10 +282,12 @@ void ConnectivityMatMul::numericBinningFirstPass() {
   auto total_nnz_view = ax::viewInOut(command, *m_meta->total_nnz);
   auto max_row_nnz_view = ax::viewInOut(command, *m_meta->max_row_nnz);
 
+  total_nnz_view[0] = 0;
+  max_row_nnz_view[0] = 0;
+
   ax::LocalMemory<Int32, NUM_BIN> shared_bin_size(command, NUM_BIN);
   ax::LocalMemory<Int32, 1> shared_local_nnz(command, 1);
   ax::LocalMemory<Int32, 1> shared_max_row_nnz(command, 1);
-  max_row_nnz_view[0] = 0;
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, nb_groups * group_size, nb_groups, group_size);
 
@@ -349,7 +350,7 @@ void ConnectivityMatMul::numericBinningFirstPass() {
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
         auto work_item = work_group.activeItem(g);
-        Int32 i = work_item.linearIndex() + g;
+        Int32 i = work_item.linearIndex();
 
         // Guarding against overflow
         if (i < M) {
@@ -467,7 +468,7 @@ void ConnectivityMatMul::numericBinningSecondPass() {
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
         auto work_item = work_group.activeItem(g);
-        Int32 i = work_item.linearIndex() + g;
+        Int32 i = work_item.linearIndex();
         Int32 row_nnz, j;
 
         // Guarding against overflow
@@ -490,7 +491,7 @@ void ConnectivityMatMul::numericBinningSecondPass() {
 
         for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
           auto work_item = work_group.activeItem(g);
-          Int32 i = work_item.linearIndex() + g;
+          Int32 i = work_item.linearIndex();
 
           Int32 index;
           // Guarding against overflow

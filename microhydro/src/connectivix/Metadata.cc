@@ -27,6 +27,9 @@ void Metadata::allocate_rpt(CSR &C) {
     total_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::Host);
     max_row_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::Host);
     scan_storage = new NumArray<Int32, MDDim1>(C.M + 1, eMemoryRessource::Host);
+
+    (*total_nnz)[0] = 0;
+    (*max_row_nnz)[0] = 0;
   }
 }
 
@@ -51,19 +54,15 @@ void Metadata::release() {
     run_queues = nullptr;
   }
 
-  // std::cout << "Freeing bins" << std::endl;
-  // delete bins;
-  // std::cout << "Freeing bin_size" << std::endl;
-  // delete bin_size;
-  // std::cout << "Freeing total_nnz" << std::endl;
-  // delete total_nnz;
-  // std::cout << "Freeing bin_offset" << std::endl;
-  // delete bin_offset;
-  // if (is_acc) {
-  //   scan_storage = nullptr;
-  // } else {
-  //   delete scan_storage;
-  // }
+  delete bins;
+  delete bin_size;
+  delete total_nnz;
+  delete bin_offset;
+  if (is_acc) {
+    scan_storage = nullptr;
+  } else {
+    delete scan_storage;
+  }
 }
 
 ax::RunQueue &Metadata::get_run_queue(Int32 queue_index) {

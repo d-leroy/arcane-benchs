@@ -183,9 +183,6 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
     } else {
       const Int32 nb_items = work_group.nbActiveItem();
 
-      // std::cout << "Handling " << nb_items << " items" << std::endl;
-      // std::cout << "NNZ: " << arpt_view[m_meta->M] << std::endl;
-
       for (Int32 item_rank = 0; item_rank < nb_items; ++item_rank) {
         for (Int32 j = item_rank; j < PWARP_ROWS * PWARP_TSIZE; j += group_size) {
           local_table[j] = -1;
@@ -217,27 +214,19 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
         Int32 j, k, acol, bcol, hash, old;
 
         if (arpt_view[rid] + tid < arpt_view[rid + 1]) {
-          // std::cout << std::endl;
-          // std::cout << "================= Row ID: " << rid << " [" << tid << "] =================" << std::endl;
         }
 
         for (j = arpt_view[rid] + tid; j < arpt_view[rid + 1]; j += PWARP) { // pwarp per row, thread per a item, thread per b row
-          // std::cout << "  column at index " << j << std::endl;
           acol = acol_view[j];
-          // std::cout << "  A(" << rid << "," << acol << ")" << std::endl;
           for (k = brpt_view[acol]; k < brpt_view[acol + 1]; ++k) { // thread per b row
             bcol = bcol_view[k];
-            // std::cout << "  B(" << acol << "," << bcol << ")" << std::endl;
             hash = (bcol * HASH_SCALE) & (PWARP_TSIZE - 1);
-            // std::cout << "  hash = " << hash << std::endl;
             while (1) {
               old = ax::doAtomicCAS(&local_table[table_offset + hash], -1, bcol);
               if (old == -1) {
-                // std::cout << "  => Product A(" << rid << "," << acol << ") x B(" << acol << "," << bcol << ") for C(" << rid << "," << bcol << ")" << std::endl;
                 ax::doAtomicAdd(&local_nnz[block_rid], 1);
                 break;
               } else if (old == bcol) {
-                // std::cout << "  => Product A(" << rid << "," << acol << ") x B(" << acol << "," << bcol << ") for C(" << rid << "," << bcol << ") (already registered)" << std::endl;
                 break;
               } else {
                 hash = (hash + 1) & (PWARP_TSIZE - 1);

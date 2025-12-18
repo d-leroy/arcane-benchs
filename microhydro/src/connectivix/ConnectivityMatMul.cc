@@ -52,12 +52,10 @@ void ConnectivityMatMul::doMatMul() {
 // Computing number of products for each row,
 // and max number of products in a single row.
 void ConnectivityMatMul::setup() {
-  const Int32 M = m_meta->M;
-
   auto command = makeCommand(m_meta->get_run_queue(0));
 
   auto row_flop_view = ax::viewOut(command, *m_C.rpt);
-  auto max_flop_view = ax::viewInOut(command, *m_meta->max_row_nnz);
+  auto max_row_flop_view = ax::viewInOut(command, *m_meta->max_row_nnz);
   auto arpt_view = ax::viewIn(command, *m_A.rpt);
   auto acol_view = ax::viewIn(command, *m_A.col);
   auto brpt_view = ax::viewIn(command, *m_B.rpt);
@@ -66,9 +64,7 @@ void ConnectivityMatMul::setup() {
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, m_meta->M, 0, 0);
 
-  if (!ax::isAcceleratorPolicy(m_runner.executionPolicy())) {
-    row_flop_view[M] = 0;
-  }
+  max_row_flop_view[0] = 0;
 
   command << RUNCOMMAND_LAUNCH(ctx, loop_range, shared_max_row_flop) {
     auto work_group = ctx.group();
@@ -99,7 +95,7 @@ void ConnectivityMatMul::setup() {
       work_group.barrier();
 
       if (is_rank0) {
-        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_flop_view[0], local_max_row_flop[0]);
+        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_flop_view[0], local_max_row_flop[0]);
       }
     } else {
       local_max_row_flop[0] = 0;
@@ -120,7 +116,7 @@ void ConnectivityMatMul::setup() {
         ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&local_max_row_flop[0], row_flop);
       }
 
-      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_flop_view[0], local_max_row_flop[0]);
+      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_flop_view[0], local_max_row_flop[0]);
     }
   };
 }
