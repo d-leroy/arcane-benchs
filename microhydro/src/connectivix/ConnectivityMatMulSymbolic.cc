@@ -9,7 +9,9 @@
 #include "arcane/core/IndexedItemConnectivityView.h"
 #include "arcane/mesh/ItemFamily.h"
 #include "arcane/utils/MemoryUtils.h"
+#include "arccore/common/accelerator/DeviceInfo.h"
 #include "define.h"
+#include <algorithm>
 
 namespace ax = Arcane::Accelerator;
 
@@ -22,7 +24,7 @@ void ConnectivityMatMul::symbolic() {
   Int32 *d_fail_bins, *d_fail_bin_size;
   Int32 fail_bin_size = 0;
   if ((*m_meta->bin_size)[7]) { // shared hash with fail
-    ARCANE_FATAL("Unsupported bin size");
+    ARCANE_FATAL("Unsupported bin size: 7");
     // if(meta.bin_size[7] + 1 <= meta.cub_storage_size/sizeof(Int32)){
     //     d_fail_bins = meta.d_cub_storage;
     //     d_fail_bin_size = meta.d_cub_storage + meta.bin_size[7];
@@ -44,7 +46,7 @@ void ConnectivityMatMul::symbolic() {
   }
 
   if ((*m_meta->bin_size)[6]) {
-    ARCANE_FATAL("Unsupported bin size");
+    ARCANE_FATAL("Unsupported bin size: 6");
     // symbolicSharedHashTable<8192>(*(m_meta->run_queues[6].get()),
     //                               (*m_meta->bin_offset)[6],
     //                               (*m_meta->bin_size)[6]);
@@ -60,7 +62,7 @@ void ConnectivityMatMul::symbolic() {
   }
 
   if ((*m_meta->bin_size)[7]) {
-    ARCANE_FATAL("Unsupported bin size");
+    ARCANE_FATAL("Unsupported bin size: 7");
     // CHECK_ERROR(cudaMemcpyAsync(&fail_bin_size, d_fail_bin_size,
     // sizeof(Int32), cudaMemcpyDeviceToHost, meta.stream[7]));
     // CHECK_ERROR(cudaStreamSynchronize(meta.stream[7]));
@@ -104,8 +106,39 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
   const ax::RunQueue &queue = *(m_meta->run_queues[bin_index].get());
   const Int32 bin_size = (*m_meta->bin_size)[bin_index];
 
-  const Int32 group_size = PWARP_ROWS * PWARP;
-  const Int32 nb_groups = div_up(bin_size, PWARP_ROWS);
+  const auto &device_info = m_runner.deviceInfo();
+
+  // 1024
+  // const Int32 maxThreadsPerBlock = device_info.maxThreadsPerBlock();
+  const Int32 maxThreadsPerBlock = 1024;
+  // 1536
+  // const Int32 maxThreadsPerSM = device_info.maxThreadsPerMultiProcessor();
+  const Int32 maxThreadsPerSM = 1536;
+
+  // 2 => threads per SM divided by threads per block, rounded up
+  const Int32 nbBlocks = div_up(maxThreadsPerSM, maxThreadsPerBlock);
+  // 768 => threads per SM divided by number of blocks, rounded down to the nearest multiple of 32 (warp size)
+  const Int32 nbThreadsPerBlock = (div_up(maxThreadsPerSM, nbBlocks) / 32) * 32;
+
+  // 49152
+  const Int32 shmemPerBlock = device_info.sharedMemoryPerBlock();
+  // 102400
+  const Int32 shmemPerSM = device_info.sharedMemoryPerMultiprocessor();
+  // 49152 (TODO: take optin into account?)
+  const Int32 maxShmemPerBlock = std::min(shmemPerBlock, shmemPerSM / nbBlocks);
+
+  // 192 => each partial warp (4 threads) handles one row, so each block can handle at most (threads per block) / 4 rows
+  const Int32 rows_per_block_comp = nbThreadsPerBlock / PWARP;
+  // 64 => each row has its hash table, so there are (max shared memory per block) / (rows per block) / 4 entries of 4 bytes available per row
+  const Int32 rows_per_block_shmem = maxShmemPerBlock / (4 * (PWARP_TSIZE + 1));
+
+  const Int32 rows_per_block = PWARP_ROWS; // std::min(rows_per_block_shmem, rows_per_block_comp);
+
+  // How many threads in a block = rows in a block * threads per partial warp (= 4)
+  //
+  const Int32 group_size = rows_per_block * PWARP;
+  //
+  const Int32 nb_groups = div_up(bin_size, rows_per_block);
 
   auto command = makeCommand(queue);
   auto arpt_view = ax::viewIn(command, *m_A.rpt);
@@ -115,8 +148,8 @@ void ConnectivityMatMul::symbolicPartialWarpSharedHashTable(Int32 bin_index) {
   auto bins_view = ax::viewIn(command, *m_meta->bins);
   auto row_nnz_view = ax::viewOut(command, *m_C.rpt);
 
-  ax::LocalMemory<Int32, PWARP_ROWS * PWARP_TSIZE> shared_table(command, PWARP_ROWS * PWARP_TSIZE);
-  ax::LocalMemory<Int32, PWARP_ROWS> shared_nnz(command, PWARP_ROWS);
+  ax::LocalMemory<Int32> shared_table(command, rows_per_block * PWARP_TSIZE);
+  ax::LocalMemory<Int32> shared_nnz(command, rows_per_block);
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, nb_groups * group_size, nb_groups, group_size);
 

@@ -19,7 +19,7 @@ namespace Connectivix {
 void ConnectivityMatMul::doMatMul() {
   const bool is_acc = ax::isAcceleratorPolicy(m_runner.executionPolicy());
   setup();
-  m_meta->allocate(m_runner);
+  m_meta->allocate();
   m_meta->barrier();
 
   symbolicBinning();
@@ -39,6 +39,7 @@ void ConnectivityMatMul::doMatMul() {
   }
 
   m_C.nnz = (*m_meta->total_nnz)[0];
+  printf("nnz: %d\n", m_C.nnz);
   if (is_acc) {
     m_C.col = new NumArray<Int32, MDDim1>(m_C.nnz, eMemoryRessource::Device);
   } else {
@@ -60,20 +61,20 @@ void ConnectivityMatMul::setup() {
   auto acol_view = ax::viewIn(command, *m_A.col);
   auto brpt_view = ax::viewIn(command, *m_B.rpt);
 
-  ax::LocalMemory<Int32, 1> shared_max_row_flop(command, 1);
+  ax::LocalMemory<Int32, 1> local_max_row_flop(command, 1);
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, m_meta->M, 0, 0);
 
   max_row_flop_view[0] = 0;
 
-  command << RUNCOMMAND_LAUNCH(ctx, loop_range, shared_max_row_flop) {
+  command << RUNCOMMAND_LAUNCH(ctx, loop_range, local_max_row_flop) {
     auto work_group = ctx.group();
-    auto local_max_row_flop = shared_max_row_flop.span();
+    auto shared_max_row_flop = local_max_row_flop.span();
 
     if (work_group.isDevice()) {
       const bool is_rank0 = (work_group.activeWorkItemRankInGroup() == 0);
       if (is_rank0) {
-        local_max_row_flop[0] = 0;
+        shared_max_row_flop[0] = 0;
       }
       work_group.barrier();
 
@@ -88,17 +89,19 @@ void ConnectivityMatMul::setup() {
       for (j = arow_start; j < arow_end; ++j) {
         acol = acol_view[j];
         row_flop += brpt_view[acol + 1] - brpt_view[acol];
+        // printf("[%d] B[%d] = %d; B[%d] = %d; diff = %d\n", j, acol + 1, brpt_view[acol + 1], acol, brpt_view[acol], brpt_view[acol + 1] - brpt_view[acol]);
       }
       row_flop_view[i] = row_flop;
-      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&local_max_row_flop[0], row_flop);
+      // printf("row_flop[%d] = %d\n", i, row_flop_view[i]);
+      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&shared_max_row_flop[0], row_flop);
 
       work_group.barrier();
 
       if (is_rank0) {
-        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_flop_view[0], local_max_row_flop[0]);
+        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_flop_view[0], shared_max_row_flop[0]);
       }
     } else {
-      local_max_row_flop[0] = 0;
+      shared_max_row_flop[0] = 0;
 
       for (Int32 item_rank = 0; item_rank < work_group.nbActiveItem(); ++item_rank) {
         const auto work_item = work_group.activeItem(item_rank);
@@ -113,10 +116,10 @@ void ConnectivityMatMul::setup() {
           row_flop += brpt_view[acol + 1] - brpt_view[acol];
         }
         row_flop_view[i] = row_flop;
-        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&local_max_row_flop[0], row_flop);
+        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&shared_max_row_flop[0], row_flop);
       }
 
-      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_flop_view[0], local_max_row_flop[0]);
+      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_flop_view[0], shared_max_row_flop[0]);
     }
   };
 }

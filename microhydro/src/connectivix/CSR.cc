@@ -74,8 +74,11 @@ CSR *CSR::transpose() const {
   // Converting from coordinates back to compressed sparse row.
   to_rpt->fill(0);
   for (Int32 i = 0; i < nnz; ++i) {
+    // std::cout << "I_[" << i << "] + 1 = " << I_[i] + 1 << std::endl;
+    // std::cout << "(*to_rpt)[I_[" << i << "] + 1] = " << (*to_rpt)[I_[i] + 1] << std::endl;
     (*to_rpt)[I_[i] + 1]++;
   }
+
   for (Int32 i = 1; i <= N; ++i) {
     (*to_rpt)[i] += (*to_rpt)[i - 1];
   }
@@ -93,27 +96,31 @@ CSR *CSR::transpose() const {
 }
 
 std::string CSR::printRows() const {
+  auto rows = new NumArray<Int32, MDDim1>(M + 1, eMemoryResource::Host);
+  rows->copy(*rpt);
   std::stringstream sstream;
   sstream << "Rows (" << M << "):" << std::endl;
   for (Int32 i = 0; i < M + 1; ++i) {
-    sstream << (*rpt)[i] << " ";
+    sstream << i << ":" << (*rows)[i] << " ";
   }
   sstream << std::endl;
   return sstream.str();
 }
 
 std::string CSR::printCols() const {
+  auto col = new NumArray<Int32, MDDim1>(nnz, eMemoryResource::Host);
+  col->copy(*col);
   std::stringstream sstream;
   sstream << "Cols (" << nnz << "):" << std::endl;
   for (Int32 i = 0; i < nnz; ++i) {
-    sstream << (*col)[i] << " ";
+    sstream << i << ":" << (*col)[i] << " ";
   }
   sstream << std::endl;
   return sstream.str();
 }
 
 std::string CSR::printMatrix() const {
-  auto rows = new NumArray<Int32, MDDim1>(N + 1, eMemoryResource::Host);
+  auto rows = new NumArray<Int32, MDDim1>(M + 1, eMemoryResource::Host);
   auto cols = new NumArray<Int32, MDDim1>(nnz, eMemoryResource::Host);
   rows->copy(*rpt);
   cols->copy(*col);
@@ -132,7 +139,7 @@ std::string CSR::printMatrix() const {
 }
 
 void CSR::dumpMatrix(std::ofstream &file) const {
-  auto rows = new NumArray<Int32, MDDim1>(N + 1, eMemoryResource::Host);
+  auto rows = new NumArray<Int32, MDDim1>(M + 1, eMemoryResource::Host);
   auto cols = new NumArray<Int32, MDDim1>(nnz, eMemoryResource::Host);
   rows->copy(*rpt);
   cols->copy(*col);

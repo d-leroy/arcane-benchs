@@ -17,6 +17,7 @@ public:
   Int32 N;
 
   bool is_acc;
+  Int32 available_shmem;
 
   NumArray<Int32, MDDim1> *bins;         // size M
   NumArray<Int32, MDDim1> *bin_size;     // size NUM_BIN
@@ -34,7 +35,7 @@ public:
   ~Metadata();
 
   void allocate_rpt(CSR &C);
-  void allocate(ax::Runner &m_runner);
+  void allocate();
   void release();
 
   void barrier() const;
@@ -44,7 +45,7 @@ public:
   Int32 get_bin_offset(Int32 bin_index);
   Int32 get_bin_size(Int32 bin_index);
 
-  std::string printBins() const;
+  std::string print_bins(NumArray<Int32, MDDim1> &nnz) const;
 };
 
 } // namespace Connectivix

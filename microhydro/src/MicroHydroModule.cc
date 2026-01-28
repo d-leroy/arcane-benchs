@@ -115,7 +115,7 @@ public:
   void applyEquationOfState();
   void computeDeltaT();
 
-  void _computeNodeIndexInCells();
+  // void _computeNodeIndexInCells();
 
 private:
   ITimeStats *m_time_stats = nullptr;
@@ -204,7 +204,7 @@ void MicroHydroModule::hydroStartInit() {
 
   // Dimensionne les variables tableaux
   m_cell_cqs.resize(8);
-  DO_CALL(_computeNodeIndexInCells);
+  // DO_CALL(_computeNodeIndexInCells);
   DO_CALL(_computeBoundaryMatrices);
 
   // Vérifie que les valeurs initiales sont correctes
@@ -309,7 +309,7 @@ void MicroHydroModule::hydroOnMeshChanged() {
   info() << "Hydro: OnMeshChanged";
 
   m_connectivity_view.setMesh(this->mesh());
-  DO_CALL(_computeNodeIndexInCells);
+  // DO_CALL(_computeNodeIndexInCells);
   DO_CALL(_computeBoundaryMatrices);
 }
 
@@ -769,7 +769,7 @@ void MicroHydroModule::computeGeometricValues() {
   //   nodesOfCell->extractRow(*m_nodesOfCell, cid);
 
   //   Vector *facesOfCell = Library::createVector(nbFace());
-  //   facesOfCell->extractRow(*m_facesOfCell, cid);
+  //   facesOfCell->extractRow(*m_facesOfCell, cid); // TODO: can we put this in shared memory?
 
   //   Matrix *edgesOfFaceInCell = Library::createMatrix(nbFace(), nbEdge());
   //   edgesOfFaceInCell->multiply(*m_edgesOfFace, *facesOfCell, false, true);
@@ -811,11 +811,11 @@ void MicroHydroModule::computeGeometricValues() {
   //     cubool::index firstNodeOfCell = *(nodesOfCell->begin());
 
   //     Vector *facesOfNode = Library::createVector(nbFace());
-  //     facesOfNode->extractRow(*m_facesOfNode, firstNodeOfCell);
+  //     facesOfNode->extractRow(*m_facesOfNode, firstNodeOfCell); // TODO: can we put this in shared memory?
   //     Vector *facesOfNodeInCell = Library::createVector(nbFace());
-  //     facesOfNodeInCell->eWiseMult(*facesOfNode, *facesOfCell, true);
+  //     facesOfNodeInCell->eWiseMult(*facesOfNode, *facesOfCell, true); // TODO: can we put this in shared memory?
 
-  //     Real distances[facesOfNodeInCell->getNbVals()];
+  //     Real distances[facesOfNodeInCell->getNbVals()]; // TODO: use payload vector based on facesOfNodeInCell instead (ideally in shared memory)
   //     Integer nb_medians = 0;
   //     cubool::index *face_iterator;
   //     Vector *oppositeFacesOfFace = Library::createVector(nbFace());
@@ -916,184 +916,218 @@ const Connectivix::CSR *assembleCSR(const Int32 M, const Int32 N, const Int32 *r
 
 void MicroHydroModule::_computeBoundaryMatrices() {
   if (nbEdge() > 0) {
-    info() << "Computing edges of node: " << nbNode() << " x " << nbEdge();
-
+    info() << "Building edges of node: " << nbNode() << " x " << nbEdge();
     m_edgesOfNode = new Connectivix::ConnectivityMatrix<Node, Edge>(nbNode(), nbEdge());
     m_edgesOfNode->build(m_connectivity_view.nodeEdge(), allNodes());
+    info() << "Number of elements: " << m_edgesOfNode->getNbVals();
+    info();
 
+    info() << "Building nodes of edge: " << nbEdge() << " x " << nbNode();
     m_nodesOfEdge = new Connectivix::ConnectivityMatrix<Edge, Node>(nbEdge(), nbNode());
     m_nodesOfEdge->build(m_connectivity_view.edgeNode(), allEdges());
+    info() << "Number of elements: " << m_nodesOfEdge->getNbVals();
+    info();
 
-    info() << "Number of elements: " << m_edgesOfNode->getNbVals();
-    info() << "Sparsity: " << m_edgesOfNode->getNbVals() / (1.0 * m_edgesOfNode->getNbRows() * m_edgesOfNode->getNbCols());
-
-    info() << "Computing faces of edge: " << nbEdge() << " x " << nbFace();
-
+    info() << "Building faces of edge: " << nbEdge() << " x " << nbFace();
     m_facesOfEdge = new Connectivix::ConnectivityMatrix<Edge, Face>(nbEdge(), nbFace());
     m_facesOfEdge->build(m_connectivity_view.edgeFace(), allEdges());
+    info() << "Number of elements: " << m_facesOfEdge->getNbVals();
+    info();
 
+    info() << "Building edges of face: " << nbFace() << " x " << nbEdge();
     m_edgesOfFace = new Connectivix::ConnectivityMatrix<Face, Edge>(nbFace(), nbEdge());
     m_edgesOfFace->build(m_connectivity_view.faceEdge(), allFaces());
+    info() << "Number of elements: " << m_edgesOfFace->getNbVals();
+    info();
 
-    info() << "Number of elements: " << m_facesOfEdge->getNbVals();
-    info() << "Sparsity: " << m_facesOfEdge->getNbVals() / (1.0 * m_facesOfEdge->getNbRows() * m_facesOfEdge->getNbCols());
   } else {
-    info() << "Computing faces of node: " << nbNode() << " x " << nbFace();
-
+    info() << "Building faces of node: " << nbNode() << " x " << nbFace();
     m_facesOfNode = new Connectivix::ConnectivityMatrix<Node, Face>(nbNode(), nbFace());
     m_facesOfNode->build(m_connectivity_view.nodeFace(), allNodes());
+    info() << "Number of elements: " << m_facesOfNode->getNbVals();
+    info();
 
+    info() << "Building nodes of face: " << nbFace() << " x " << nbNode();
     m_nodesOfFace = new Connectivix::ConnectivityMatrix<Face, Node>(nbFace(), nbNode());
     m_nodesOfFace->build(m_connectivity_view.faceNode(), allFaces());
-
-    info() << "Number of elements: " << m_facesOfNode->getNbVals();
-    info() << "Sparsity: " << m_facesOfNode->getNbVals() / (1.0 * m_facesOfNode->getNbRows() * m_facesOfNode->getNbCols());
+    info() << "Number of elements: " << m_nodesOfFace->getNbVals();
+    info();
   }
 
-  info() << "Computing cells of face: " << nbFace() << " x " << nbCell();
-
+  info() << "Building cells of face: " << nbFace() << " x " << nbCell();
   m_cellsOfFace = new Connectivix::ConnectivityMatrix<Face, Cell>(nbFace(), nbCell());
   m_cellsOfFace->build(m_connectivity_view.faceCell(), allFaces());
+  info() << "Number of elements: " << m_cellsOfFace->getNbVals();
+  info();
 
+  info() << "Building faces of cell: " << nbCell() << " x " << nbFace();
   m_facesOfCell = new Connectivix::ConnectivityMatrix<Cell, Face>(nbCell(), nbFace());
   m_facesOfCell->build(m_connectivity_view.cellFace(), allCells());
-
   info() << "Number of elements: " << m_cellsOfFace->getNbVals();
-  info() << "Sparsity: " << m_cellsOfFace->getNbVals() / (1.0 * m_cellsOfFace->getNbRows() * m_cellsOfFace->getNbCols());
+  info();
 
   if (nbEdge() > 0) {
     info() << "Computing faces of node: " << nbNode() << " x " << nbFace();
-
     m_facesOfNode = m_edgesOfNode->matMul(*m_facesOfEdge, m_runner);
-    m_nodesOfFace = m_edgesOfFace->matMul(*m_nodesOfEdge, m_runner);
-
     info() << "Number of elements: " << m_facesOfNode->getNbVals();
-    info() << "Sparsity: " << m_facesOfNode->getNbVals() / (1.0 * m_facesOfNode->getNbRows() * m_facesOfNode->getNbCols());
+    info();
+
+    info() << "Computing nodes of face: " << nbFace() << " x " << nbNode();
+    m_nodesOfFace = m_edgesOfFace->matMul(*m_nodesOfEdge, m_runner);
+    info() << "Number of elements: " << m_nodesOfFace->getNbVals();
+    info();
+
+    info() << "Building faces of node reference: " << nbNode() << " x " << nbFace();
+    auto facesOfNodeCheck = new Connectivix::ConnectivityMatrix<Node, Face>(nbNode(), nbFace());
+    facesOfNodeCheck->build(m_connectivity_view.nodeFace(), allNodes());
+    info() << "Number of elements: " << facesOfNodeCheck->getNbVals();
+    info();
+
+    info() << "Building nodes of face reference: " << nbFace() << " x " << nbNode();
+    auto nodesOfFaceCheck = new Connectivix::ConnectivityMatrix<Face, Node>(nbFace(), nbNode());
+    nodesOfFaceCheck->build(m_connectivity_view.faceNode(), allFaces());
+    info() << "Number of elements: " << nodesOfFaceCheck->getNbVals();
+    info();
+
+    // {
+    //   ofstream nodesOfFaceDump("./mtx/nodes_of_face.mtx");
+    //   m_nodesOfFace->m_data->dumpMatrix(nodesOfFaceDump);
+    //   nodesOfFaceDump.close();
+
+    //   ofstream facesOfNode("./mtx/faces_of_node.mtx");
+    //   m_facesOfNode->m_data->dumpMatrix(facesOfNode);
+    //   facesOfNode.close();
+    // }
+
+    // {
+    //   ofstream nodesOfFaceDump("./mtx/nodes_of_face_check.mtx");
+    //   nodesOfFaceCheck->m_data->dumpMatrix(nodesOfFaceDump);
+    //   nodesOfFaceDump.close();
+
+    //   ofstream facesOfNode("./mtx/faces_of_node_check.mtx");
+    //   facesOfNodeCheck->m_data->dumpMatrix(facesOfNode);
+    //   facesOfNode.close();
+    // }
   }
 
   info() << "Computing cells of node: " << nbNode() << " x " << nbCell();
-
   m_cellsOfNode = m_facesOfNode->matMul(*m_cellsOfFace, m_runner);
-  m_nodesOfCell = m_facesOfCell->matMul(*m_nodesOfFace, m_runner);
-
   info() << "Number of elements: " << m_cellsOfNode->getNbVals();
-  info() << "Sparsity: " << m_cellsOfNode->getNbVals() / (1.0 * m_cellsOfNode->getNbRows() * m_cellsOfNode->getNbCols());
+  info();
 
-  {
-    ofstream cellsOfNodeDump("./mtx/cells_of_node_indirect.mtx");
-    m_cellsOfNode->m_data->dumpMatrix(cellsOfNodeDump);
-    cellsOfNodeDump.close();
-  }
+  info() << "Computing nodes of cell: " << nbCell() << " x " << nbNode();
+  m_nodesOfCell = m_facesOfCell->matMul(*m_nodesOfFace, m_runner);
+  info() << "Number of elements: " << m_cellsOfNode->getNbVals();
+  info();
 
-  {
-    Connectivix::ConnectivityMatrix<Node, Cell> checkCellsOfNode(nbNode(), nbCell());
-    checkCellsOfNode.build(m_connectivity_view.nodeCell(), allNodes());
-    ofstream cellsOfNodeDump("./mtx/cells_of_node_direct.mtx");
-    checkCellsOfNode.m_data->dumpMatrix(cellsOfNodeDump);
-    cellsOfNodeDump.close();
-  }
-  // Matrix *facesOfCellsOfNode = Library::createMatrix(nbNode(), nbFace());
-  // facesOfCellsOfNode->multiply(*m_cellsOfNode, *m_facesOfCell, true, true);
+  // {
+  //   ofstream cellsOfNodeDump("./mtx/cells_of_node.mtx");
+  //   m_cellsOfNode->m_data->dumpMatrix(cellsOfNodeDump);
+  //   cellsOfNodeDump.close();
+  // }
+
+  // {
+  //   Connectivix::ConnectivityMatrix<Node, Cell> checkCellsOfNode(nbNode(), nbCell());
+  //   checkCellsOfNode.build(m_connectivity_view.nodeCell(), allNodes());
+  //   ofstream cellsOfNodeDump("./mtx/cells_of_node_check.mtx");
+  //   checkCellsOfNode.m_data->dumpMatrix(cellsOfNodeDump);
+  //   cellsOfNodeDump.close();
+  // }
 
   // m_nodesOfCellsOfNode = Library::createMatrix(nbNode(), nbNode());
   // m_nodesOfCellsOfNode->multiply(*facesOfCellsOfNode, *m_nodesOfFace, true, true);
   // info() << "Number of elements: " << m_nodesOfCellsOfNode->getNbVals();
   // info() << "Sparsity: " << m_nodesOfCellsOfNode->getNbVals() / (1.0 * m_nodesOfCellsOfNode->getNbRows() * m_nodesOfCellsOfNode->getNbCols());
 
-  // info() << "Computing opposite faces: " << nbFace() << " x " << nbFace();
-  // Matrix *faceNodeReachability1 = Library::createMatrix(nbFace(), nbFace());
-  // faceNodeReachability1->multiply(*m_nodesOfFace, *m_facesOfNode, false,
-  // true);
-
-  // Matrix *faceNodeReachability1Transpose =
-  //     Library::createMatrix(nbFace(), nbFace());
-  // faceNodeReachability1Transpose->transpose(*faceNodeReachability1, true);
-
-  // Matrix *faceNodeReachability2 = Library::createMatrix(nbFace(), nbFace());
-  // faceNodeReachability2->multiply(*faceNodeReachability1,
-  //                                 *faceNodeReachability1Transpose, false,
-  //                                 true);
-
-  // Matrix *faceNodeReachabilityExactly2 =
-  //     Library::createMatrix(nbFace(), nbFace());
-  // faceNodeReachabilityExactly2->eWiseSub(*faceNodeReachability2,
-  //                                        *faceNodeReachability1, true);
-
-  // Matrix *faceCellReachability1 = Library::createMatrix(nbFace(), nbFace());
-  // faceCellReachability1->multiply(*m_cellsOfFace, *m_facesOfCell, false,
-  // true);
-
-  // m_oppositeFaceOfFace = Library::createMatrix(nbFace(), nbFace());
-  // m_oppositeFaceOfFace->eWiseMult(*faceNodeReachabilityExactly2,
-  //                                 *faceCellReachability1, true);
-
-  // info() << "Number of elements: " << m_oppositeFaceOfFace->getNbVals();
-  // info() << "Sparsity: "
-  //        << m_oppositeFaceOfFace->getNbVals() /
-  //               (1.0 * m_oppositeFaceOfFace->getNbRows() *
-  //                m_oppositeFaceOfFace->getNbCols());
+  info() << "Computing opposite faces: " << nbFace() << " x " << nbFace();
 
   {
-    ofstream nodesOfCellDump("./mtx/nodes_of_cell.mtx");
-    m_nodesOfCell->m_data->dumpMatrix(nodesOfCellDump);
-    nodesOfCellDump.close();
+    ofstream matrixDump("./mtx/nodes_of_face.mtx");
+    m_nodesOfFace->m_data->dumpMatrix(matrixDump);
+    matrixDump.close();
   }
+
   {
-    Connectivix::ConnectivityMatrix<Node, Cell> *transposed = m_nodesOfCell->transpose(m_runner);
-    ofstream nodesOfCellTransposeDump("./mtx/nodes_of_cell_from_transpose.mtx");
-    transposed->m_data->dumpMatrix(nodesOfCellTransposeDump);
-    nodesOfCellTransposeDump.close();
+    ofstream matrixDump("./mtx/faces_of_node.mtx");
+    m_facesOfNode->m_data->dumpMatrix(matrixDump);
+    matrixDump.close();
   }
 
-  ofstream facesOfCellDump("./mtx/faces_of_cell.mtx");
-  m_facesOfCell->m_data->dumpMatrix(facesOfCellDump);
-  facesOfCellDump.close();
+  auto *faceNodeReachability1 = m_nodesOfFace->matMul(*m_facesOfNode, m_runner);
+  info() << "Faces-through-node: " << faceNodeReachability1->getNbVals();
+  // auto *faceNodeReachability1Transposed = faceNodeReachability1->transpose(m_runner);
+  // {
+  //   auto *faceNodeReachability1TransposedTwice = faceNodeReachability1Transposed->transpose(m_runner);
 
-  if (nbEdge() > 0) {
-    ofstream edgesOfFaceDump("./mtx/edges_of_face.mtx");
-    m_edgesOfFace->m_data->dumpMatrix(edgesOfFaceDump);
-    edgesOfFaceDump.close();
-  }
+  //   {
+  //     ofstream facesThroughNodeDump("./mtx/faces-through-nodes.mtx");
+  //     faceNodeReachability1->m_data->dumpMatrix(facesThroughNodeDump);
+  //     facesThroughNodeDump.close();
+  //   }
+
+  //   {
+  //     ofstream facesThroughNodeDump("./mtx/faces-through-nodes-twice-transposed.mtx");
+  //     faceNodeReachability1TransposedTwice->m_data->dumpMatrix(facesThroughNodeDump);
+  //     facesThroughNodeDump.close();
+  //   }
+  // }
+
+  // {
+  //   ofstream facesThroughNodeDump("./mtx/faces-through-nodes-transposed.mtx");
+  //   faceNodeReachability1Transposed->m_data->dumpMatrix(facesThroughNodeDump);
+  //   facesThroughNodeDump.close();
+  // }
+
+  // auto *faceNodeReachability2 = faceNodeReachability1->matMul(*faceNodeReachability1Transposed, m_runner);
+  // info() << "Faces-through-node²: " << faceNodeReachability2->getNbVals();
+  // auto *faceNodeReachabilityExactly2 = faceNodeReachability2->eWiseMatSub(*faceNodeReachability1, m_runner);
+
+  // auto *faceCellReachability1 = m_cellsOfFace->matMul(*m_facesOfCell, m_runner);
+  // info() << "Faces-through-cell: " << faceCellReachability1->getNbVals();
+
+  // m_oppositeFaceOfFace = faceNodeReachabilityExactly2->eWiseMatMul(*faceCellReachability1, m_runner);
+  // info() << "Opposite faces: " << m_oppositeFaceOfFace->getNbVals();
 }
 
 /*---------------------------------------------------------------------------*/
 /*---------------------------------------------------------------------------*/
 
-void MicroHydroModule::_computeNodeIndexInCells() {
-  info() << "ComputeNodeIndexInCells with accelerator";
-  // Un nœud est connecté au maximum à MAX_NODE_CELL mailles
-  // Calcule pour chaque nœud son index dans chacune des
-  // mailles à laquelle il est connecté.
-  NodeGroup nodes = allNodes();
-  Integer nb_node = nodes.size();
-  m_node_index_in_cells.resize(MAX_NODE_CELL * nb_node);
+// void MicroHydroModule::_computeNodeIndexInCells() {
+//   info() << "ComputeNodeIndexInCells with accelerator";
+//   // Un nœud est connecté au maximum à MAX_NODE_CELL mailles
+//   // Calcule pour chaque nœud son index dans chacune des
+//   // mailles à laquelle il est connecté.
+//   NodeGroup nodes = allNodes();
+//   Integer nb_node = nodes.size();
+//   m_node_index_in_cells.resize(MAX_NODE_CELL * nb_node);
 
-  auto node_cell_cty = m_connectivity_view.nodeCell();
-  auto cell_node_cty = m_connectivity_view.cellNode();
+//   auto node_cell_cty = m_connectivity_view.nodeCell();
+//   auto cell_node_cty = m_connectivity_view.cellNode();
 
-  auto command = makeCommand(m_default_queue);
-  auto inout_node_index_in_cells = m_node_index_in_cells.span();
+//   auto command = makeCommand(m_default_queue);
+//   auto inout_node_index_in_cells = m_node_index_in_cells.span();
 
-  command << RUNCOMMAND_ENUMERATE(Node, node, nodes) {
-    Int32 first_pos = node.localId() * MAX_NODE_CELL;
+//   command << RUNCOMMAND_ENUMERATE(Node, node, nodes) {
+//     Int32 first_pos = node.localId() * MAX_NODE_CELL;
 
-    Int32 index = 0;
-    for (CellLocalId cell : node_cell_cty.cells(node)) {
-      Int8 node_index_in_cell = 0;
-      for (NodeLocalId cell_node : cell_node_cty.nodes(cell)) {
-        if (cell_node == node)
-          break;
-        ++node_index_in_cell;
-      }
-      inout_node_index_in_cells[first_pos + index] = node_index_in_cell;
-      ++index;
-    }
+//     Int32 index = 0;
+//     for (CellLocalId cell : node_cell_cty.cells(node)) {
+//       Int8 node_index_in_cell = 0;
+//       for (NodeLocalId cell_node : cell_node_cty.nodes(cell)) {
+//         if (cell_node == node) {
+//           break;
+//         }
+//         ++node_index_in_cell;
+//       }
+//       inout_node_index_in_cells[first_pos + index] = node_index_in_cell;
+//       ++index;
+//     }
 
-    // Remplit avec la valeur nulle les derniers éléments
-    for (; index < MAX_NODE_CELL; ++index)
-      inout_node_index_in_cells[first_pos + index] = -1;
-  };
-}
+//     // Remplit avec la valeur nulle les derniers éléments
+//     for (; index < MAX_NODE_CELL; ++index)
+//       inout_node_index_in_cells[first_pos + index] = -1;
+//   };
+// }
 
 /*---------------------------------------------------------------------------*/
 /*---------------------------------------------------------------------------*/

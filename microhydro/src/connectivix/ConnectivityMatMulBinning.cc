@@ -10,6 +10,7 @@
 #include "arcane/mesh/ItemFamily.h"
 #include "arcane/utils/MemoryUtils.h"
 #include "define.h"
+#include <cstdio>
 
 namespace ax = Arcane::Accelerator;
 
@@ -17,6 +18,7 @@ namespace Connectivix {
 
 void ConnectivityMatMul::symbolicBinning() {
   // We use total_nnz to store max row products.
+  std::cout << "Max row nnz: " << (*m_meta->max_row_nnz)[0] << std::endl;
   if ((*m_meta->max_row_nnz)[0] <= 32) {
     symbolicBinningSmall();
 
@@ -24,6 +26,7 @@ void ConnectivityMatMul::symbolicBinning() {
     for (int i = 1; i < NUM_BIN; ++i) {
       (*m_meta->bin_size)[i] = 0;
     }
+
     (*m_meta->bin_offset)[0] = 0;
     for (int i = 1; i < NUM_BIN; i++) {
       (*m_meta->bin_offset)[i] = m_meta->M;
@@ -36,7 +39,13 @@ void ConnectivityMatMul::symbolicBinning() {
       (*m_meta->bin_offset)[i + 1] = (*m_meta->bin_offset)[i] + (*m_meta->bin_size)[i];
     }
 
+    for (int i = 0; i < NUM_BIN; ++i) {
+      (*m_meta->bin_size)[i] = 0;
+    }
+
     symbolicBinningSecondPass();
+
+    std::cout << m_meta->print_bins(*m_C.rpt) << std::endl;
   }
 }
 
@@ -60,17 +69,15 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
   auto command = makeCommand(m_meta->run_queues[0].get());
 
   auto row_flop_view = ax::viewIn(command, *m_C.rpt);
-  auto bin_offset_view = ax::viewInOut(command, *m_meta->bin_offset);
   auto bin_size_view = ax::viewInOut(command, *m_meta->bin_size);
-  auto bins_view = ax::viewOut(command, *m_meta->bins);
 
-  ax::LocalMemory<Int32, NUM_BIN> shared_bin_size(command, NUM_BIN);
+  ax::LocalMemory<Int32, NUM_BIN> local_bin_size(command, NUM_BIN);
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, M, 0, 0);
 
-  command << RUNCOMMAND_LAUNCH(ctx, loop_range, shared_bin_size) {
+  command << RUNCOMMAND_LAUNCH(ctx, loop_range, local_bin_size) {
     auto work_group = ctx.group();
-    auto local_bin_size = shared_bin_size.span();
+    auto shared_bin_size = local_bin_size.span();
     constexpr Int32 range[NUM_BIN] = {32, 512, 1024, 2048, 4096, 8192, 12287, INT_MAX};
     Int32 row_nnz, j;
 
@@ -80,7 +87,7 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
       Int32 i = work_item.linearIndex();
 
       if (item_rank < NUM_BIN) {
-        local_bin_size[item_rank] = 0;
+        shared_bin_size[item_rank] = 0;
       }
 
       work_group.barrier();
@@ -89,7 +96,7 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
         // #pragma unroll
         for (j = 0; j < NUM_BIN; ++j) {
           if (row_nnz <= range[j]) {
-            ax::doAtomicAdd(&local_bin_size[j], 1);
+            ax::doAtomicAdd(&shared_bin_size[j], 1);
             break;
           }
         }
@@ -98,11 +105,11 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
       work_group.barrier();
 
       if (item_rank < NUM_BIN) {
-        ax::doAtomicAdd(bin_size_view[item_rank], local_bin_size[item_rank]);
+        ax::doAtomicAdd(bin_size_view[item_rank], shared_bin_size[item_rank]);
       }
     } else {
       for (Int32 b = 0; b < NUM_BIN; ++b) {
-        local_bin_size[b] = 0;
+        shared_bin_size[b] = 0;
       }
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
@@ -114,7 +121,7 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
           // #pragma unroll
           for (j = 0; j < NUM_BIN; ++j) {
             if (row_nnz <= range[j]) {
-              ax::doAtomicAdd(&local_bin_size[j], 1);
+              ax::doAtomicAdd(&shared_bin_size[j], 1);
               break;
             }
           }
@@ -122,7 +129,7 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
       }
 
       for (Int32 b = 0; b < NUM_BIN; ++b) {
-        ax::doAtomicAdd(bin_size_view[b], local_bin_size[b]);
+        ax::doAtomicAdd(bin_size_view[b], shared_bin_size[b]);
       }
     }
   };
@@ -132,24 +139,27 @@ void ConnectivityMatMul::symbolicBinningFirstPass() {
 
 void ConnectivityMatMul::symbolicBinningSecondPass() {
   const Int32 M = m_meta->M;
+  const Int32 group_size = 512; // FIXME! 1024;
+  const Int32 nb_groups = div_up(M, group_size);
 
   auto queue = m_meta->run_queues[0].get();
-  auto command = makeCommand(m_meta->run_queues[0].get());
+
+  auto command = makeCommand(queue);
 
   auto row_flop_view = ax::viewIn(command, *m_C.rpt);
   auto bin_offset_view = ax::viewInOut(command, *m_meta->bin_offset);
   auto bin_size_view = ax::viewInOut(command, *m_meta->bin_size);
   auto bins_view = ax::viewOut(command, *m_meta->bins);
 
-  ax::LocalMemory<Int32, NUM_BIN> shared_bin_size(command, NUM_BIN);
-  ax::LocalMemory<Int32, NUM_BIN> shared_bin_offset(command, NUM_BIN);
+  ax::LocalMemory<Int32, NUM_BIN> local_bin_size(command, NUM_BIN);
+  ax::LocalMemory<Int32, NUM_BIN> local_bin_offset(command, NUM_BIN);
 
-  ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, M, 0, 0);
+  ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, group_size * nb_groups, nb_groups, group_size);
 
-  command << RUNCOMMAND_LAUNCH(ctx, loop_range, shared_bin_size, shared_bin_offset) {
+  command << RUNCOMMAND_LAUNCH(ctx, loop_range, local_bin_size, local_bin_offset) {
     auto work_group = ctx.group();
-    auto local_bin_size = shared_bin_size.span();
-    auto local_bin_offset = shared_bin_offset.span();
+    auto shared_bin_size = local_bin_size.span();
+    auto shared_bin_offset = local_bin_offset.span();
     constexpr Int32 range[NUM_BIN] = {32, 512, 1024, 2048, 4096, 8192, 12287, INT_MAX};
     Int32 row_nnz, j;
 
@@ -159,7 +169,7 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
       Int32 i = work_item.linearIndex();
 
       if (item_rank < NUM_BIN) {
-        local_bin_size[item_rank] = 0;
+        shared_bin_size[item_rank] = 0;
       }
 
       work_group.barrier();
@@ -169,19 +179,23 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
         // #pragma unroll
         for (j = 0; j < NUM_BIN; ++j) {
           if (row_nnz <= range[j]) {
-            ax::doAtomicAdd(&local_bin_size[j], 1);
+            // The row belongs to bin j so we increment its sharedlocal size.
+            ax::doAtomicAdd(shared_bin_size.ptrAt(j), 1);
             break;
           }
         }
       }
 
+      // We wait for all local bin sizes to be computed.
       work_group.barrier();
 
       if (item_rank < NUM_BIN) {
-        local_bin_offset[item_rank] = ax::doAtomicAdd(bin_size_view[item_rank], local_bin_size[item_rank]);
-        local_bin_offset[item_rank] += bin_offset_view[item_rank];
-        local_bin_size[item_rank] = 0;
+        // We aggregate local bin offsets.
+        shared_bin_offset[item_rank] = ax::doAtomicAdd(bin_size_view[item_rank], shared_bin_size[item_rank]);
+        shared_bin_offset[item_rank] += bin_offset_view[item_rank];
+        shared_bin_size[item_rank] = 0;
       }
+
       work_group.barrier();
 
       Int32 index;
@@ -189,15 +203,16 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
         // #pragma unroll
         for (j = 0; j < NUM_BIN; ++j) {
           if (row_nnz <= range[j]) {
-            index = ax::doAtomicAdd(&local_bin_size[j], 1);
-            bins_view[local_bin_offset[j] + index] = i;
+            index = ax::doAtomicAdd(shared_bin_size.ptrAt(j), 1);
+            bins_view[shared_bin_offset[j] + index] = i;
+            // printf("row_nnz[%d] = %d\n", i, row_nnz);
             return;
           }
         }
       }
     } else {
       for (Int32 b = 0; b < NUM_BIN; ++b) {
-        local_bin_size[b] = 0;
+        shared_bin_size[b] = 0;
       }
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
@@ -209,7 +224,7 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
           // #pragma unroll
           for (j = 0; j < NUM_BIN; ++j) {
             if (row_nnz <= range[j]) {
-              ax::doAtomicAdd(&local_bin_size[j], 1);
+              ax::doAtomicAdd(shared_bin_size.ptrAt(j), 1);
               break;
             }
           }
@@ -217,9 +232,9 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
       }
 
       for (Int32 b = 0; b < NUM_BIN; ++b) {
-        local_bin_offset[b] = ax::doAtomicAdd(bin_size_view[b], local_bin_size[b]);
-        local_bin_offset[b] += bin_offset_view[b];
-        local_bin_size[b] = 0;
+        shared_bin_offset[b] = ax::doAtomicAdd(bin_size_view[b], shared_bin_size[b]);
+        shared_bin_offset[b] += bin_offset_view[b];
+        shared_bin_size[b] = 0;
       }
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
@@ -232,8 +247,8 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
           // #pragma unroll
           for (j = 0; j < NUM_BIN; ++j) {
             if (row_nnz <= range[j]) {
-              index = ax::doAtomicAdd(&local_bin_size[j], 1);
-              bins_view[local_bin_offset[j] + index] = i;
+              index = ax::doAtomicAdd(shared_bin_size.ptrAt(j), 1);
+              bins_view[shared_bin_offset[j] + index] = i;
               return;
             }
           }
@@ -246,6 +261,10 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
 }
 
 void ConnectivityMatMul::numericBinning() {
+  for (int i = 0; i < NUM_BIN; ++i) {
+    (*m_meta->bin_size)[i] = 0;
+  }
+
   numericBinningFirstPass();
 
   if ((*m_meta->max_row_nnz)[0] <= 32) {
@@ -255,17 +274,26 @@ void ConnectivityMatMul::numericBinning() {
     for (int i = 1; i < NUM_BIN; ++i) {
       (*m_meta->bin_size)[i] = 0;
     }
+
     (*m_meta->bin_offset)[0] = 0;
     for (int i = 1; i < NUM_BIN; i++) {
       (*m_meta->bin_offset)[i] = m_meta->M;
     }
+
+    std::cout << m_meta->print_bins(*m_C.rpt) << std::endl;
   } else {
     (*m_meta->bin_offset)[0] = 0;
     for (int i = 0; i < NUM_BIN - 1; ++i) {
       (*m_meta->bin_offset)[i + 1] = (*m_meta->bin_offset)[i] + (*m_meta->bin_size)[i];
     }
 
+    for (int i = 0; i < NUM_BIN; ++i) {
+      (*m_meta->bin_size)[i] = 0;
+    }
+
     numericBinningSecondPass();
+
+    std::cout << m_meta->print_bins(*m_C.rpt) << std::endl;
   }
 }
 
@@ -285,30 +313,33 @@ void ConnectivityMatMul::numericBinningFirstPass() {
   total_nnz_view[0] = 0;
   max_row_nnz_view[0] = 0;
 
-  ax::LocalMemory<Int32, NUM_BIN> shared_bin_size(command, NUM_BIN);
-  ax::LocalMemory<Int32, 1> shared_local_nnz(command, 1);
-  ax::LocalMemory<Int32, 1> shared_max_row_nnz(command, 1);
+  ax::LocalMemory<Int32, NUM_BIN> local_bin_size(command, NUM_BIN);
+  ax::LocalMemory<Int32, 1> local_local_nnz(command, 1);
+  ax::LocalMemory<Int32, 1> local_max_row_nnz(command, 1);
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, nb_groups * group_size, nb_groups, group_size);
 
-  command << RUNCOMMAND_LAUNCH(ctx, loop_range, shared_bin_size, shared_local_nnz, shared_max_row_nnz) {
+  command << RUNCOMMAND_LAUNCH(ctx, loop_range, local_bin_size, local_local_nnz, local_max_row_nnz) {
     auto work_group = ctx.group();
-    auto local_bin_size = shared_bin_size.span();
-    auto local_local_nnz = shared_local_nnz.span();
-    auto local_max_row_nnz = shared_max_row_nnz.span();
+    auto shared_bin_size = local_bin_size.span();
+    auto shared_local_nnz = local_local_nnz.span();
+    auto shared_max_row_nnz = local_max_row_nnz.span();
 
-    constexpr Int32 range[NUM_BIN] = {31, 255, 511, 1022, 2047, 4095, 8191, INT_MAX};
+    auto total_nnz = total_nnz_view.to1DSpan();
+    auto max_row_nnz = max_row_nnz_view.to1DSpan();
+
+    constexpr Int32 range[NUM_BIN] = {32, 512, 1024, 2048, 4096, 8192, 12287, INT_MAX};
     Int32 row_nnz, j;
 
     if (work_group.isDevice()) {
       const Int32 item_rank = work_group.activeWorkItemRankInGroup();
       if (item_rank < NUM_BIN) {
-        local_bin_size[item_rank] = 0;
+        shared_bin_size[item_rank] = 0;
       }
 
       if (item_rank == 32) {
-        local_local_nnz[0] = 0;
-        local_max_row_nnz[0] = 0;
+        shared_local_nnz[0] = 0;
+        shared_max_row_nnz[0] = 0;
       }
 
       work_group.barrier();
@@ -319,12 +350,12 @@ void ConnectivityMatMul::numericBinningFirstPass() {
       // Guarding against overflow
       if (i < M) {
         row_nnz = row_nnz_view[i];
-        ax::doAtomicAdd(&local_local_nnz[0], row_nnz);
-        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&local_max_row_nnz[0], row_nnz);
+        ax::doAtomicAdd(&shared_local_nnz[0], row_nnz);
+        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&shared_max_row_nnz[0], row_nnz);
         // #pragma unroll
         for (j = 0; j < NUM_BIN; ++j) {
           if (row_nnz <= range[j]) {
-            ax::doAtomicAdd(&local_bin_size[j], 1);
+            ax::doAtomicAdd(&shared_bin_size[j], 1);
             break;
           }
         }
@@ -332,21 +363,21 @@ void ConnectivityMatMul::numericBinningFirstPass() {
 
       work_group.barrier();
       if (item_rank < NUM_BIN) {
-        ax::doAtomicAdd(bin_size_view[item_rank], local_bin_size[item_rank]);
+        ax::doAtomicAdd(bin_size_view[item_rank], shared_bin_size[item_rank]);
       }
       if (item_rank == 32) {
-        ax::doAtomicAdd(total_nnz_view[0], local_local_nnz[0]);
+        ax::doAtomicAdd(total_nnz_view[0], shared_local_nnz[0]);
       }
       if (item_rank == 64) {
-        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_nnz_view[0], local_max_row_nnz[0]);
+        ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_nnz_view[0], shared_max_row_nnz[0]);
       }
     } else {
       for (Int32 b = 0; b < NUM_BIN; ++b) {
-        local_bin_size[b] = 0;
+        shared_bin_size[b] = 0;
       }
 
-      local_local_nnz[0] = 0;
-      local_max_row_nnz[0] = 0;
+      shared_local_nnz[0] = 0;
+      shared_max_row_nnz[0] = 0;
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
         auto work_item = work_group.activeItem(g);
@@ -355,12 +386,12 @@ void ConnectivityMatMul::numericBinningFirstPass() {
         // Guarding against overflow
         if (i < M) {
           row_nnz = row_nnz_view[i];
-          ax::doAtomicAdd(&local_local_nnz[0], row_nnz);
-          ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&local_max_row_nnz[0], row_nnz);
+          ax::doAtomicAdd(&shared_local_nnz[0], row_nnz);
+          ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&shared_max_row_nnz[0], row_nnz);
           // #pragma unroll
           for (j = 0; j < NUM_BIN; ++j) {
             if (row_nnz <= range[j]) {
-              ax::doAtomicAdd(&local_bin_size[j], 1);
+              ax::doAtomicAdd(&shared_bin_size[j], 1);
               break;
             }
           }
@@ -368,10 +399,10 @@ void ConnectivityMatMul::numericBinningFirstPass() {
       }
 
       for (Int32 b = 0; b < NUM_BIN; ++b) {
-        ax::doAtomicAdd(bin_size_view[b], local_bin_size[b]);
+        ax::doAtomicAdd(bin_size_view[b], shared_bin_size[b]);
       }
-      ax::doAtomicAdd(total_nnz_view[0], local_local_nnz[0]);
-      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_nnz_view[0], local_max_row_nnz[0]);
+      ax::doAtomicAdd(total_nnz_view[0], shared_local_nnz[0]);
+      ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(max_row_nnz_view[0], shared_max_row_nnz[0]);
     }
   };
 
@@ -393,34 +424,34 @@ void ConnectivityMatMul::numericBinningSmall() {
 
 void ConnectivityMatMul::numericBinningSecondPass() {
   const Int32 M = m_meta->M;
-  const Int32 group_size = 1024;
+  const Int32 group_size = 512;
   const Int32 nb_groups = div_up(M, group_size);
 
   auto queue = m_meta->run_queues[0].get();
   auto command = makeCommand(queue);
 
   auto row_nnz_view = ax::viewIn(command, *m_C.rpt);
-  auto bin_offset_view = ax::viewInOut(command, *m_meta->bin_offset);
+  auto bin_offset_view = ax::viewIn(command, *m_meta->bin_offset);
   auto bin_size_view = ax::viewInOut(command, *m_meta->bin_size);
   auto bins_view = ax::viewOut(command, *m_meta->bins);
 
-  ax::LocalMemory<Int32, NUM_BIN> shared_bin_size(command, NUM_BIN);
-  ax::LocalMemory<Int32, NUM_BIN> shared_bin_offset(command, NUM_BIN);
+  ax::LocalMemory<Int32, NUM_BIN> local_bin_size(command, NUM_BIN);
+  ax::LocalMemory<Int32, NUM_BIN> local_bin_offset(command, NUM_BIN);
 
   ax::WorkGroupLoopRange loop_range = ax::makeWorkGroupLoopRange(command, nb_groups * group_size, nb_groups, group_size);
 
-  command << RUNCOMMAND_LAUNCH(ctx, loop_range, shared_bin_size, shared_bin_offset) {
+  command << RUNCOMMAND_LAUNCH(ctx, loop_range, local_bin_size, local_bin_offset) {
     auto work_group = ctx.group();
-    auto local_bin_size = shared_bin_size.span();
-    auto local_bin_offset = shared_bin_offset.span();
+    auto shared_bin_size = local_bin_size.span();
+    auto shared_bin_offset = local_bin_offset.span();
 
-    constexpr Int32 range[NUM_BIN] = {31, 255, 511, 1022, 2047, 4095, 8191, INT_MAX};
+    constexpr Int32 range[NUM_BIN] = {32, 512, 1024, 2048, 4096, 8192, 12287, INT_MAX};
     Int32 row_nnz, j;
 
     if (work_group.isDevice()) {
       const Int32 item_rank = work_group.activeWorkItemRankInGroup();
       if (item_rank < NUM_BIN) {
-        local_bin_size[item_rank] = 0;
+        shared_bin_size[item_rank] = 0;
       }
 
       work_group.barrier();
@@ -431,10 +462,10 @@ void ConnectivityMatMul::numericBinningSecondPass() {
       // Guarding against overflow
       if (i < M) {
         row_nnz = row_nnz_view[i];
-        //// #pragma unroll
+        // #pragma unroll
         for (j = 0; j < NUM_BIN; ++j) {
           if (row_nnz <= range[j]) {
-            ax::doAtomicAdd(&local_bin_size[j], 1);
+            ax::doAtomicAdd(&shared_bin_size[j], 1);
             break;
           }
         }
@@ -443,10 +474,11 @@ void ConnectivityMatMul::numericBinningSecondPass() {
       work_group.barrier();
 
       if (item_rank < NUM_BIN) {
-        local_bin_offset[item_rank] = ax::doAtomicAdd(bin_size_view[item_rank], local_bin_size[item_rank]);
-        local_bin_offset[item_rank] += bin_offset_view[item_rank];
-        local_bin_size[item_rank] = 0;
+        shared_bin_offset[item_rank] = ax::doAtomicAdd(bin_size_view[item_rank], shared_bin_size[item_rank]);
+        shared_bin_offset[item_rank] += bin_offset_view[item_rank];
+        shared_bin_size[item_rank] = 0;
       }
+
       work_group.barrier();
       Int32 index;
 
@@ -455,15 +487,15 @@ void ConnectivityMatMul::numericBinningSecondPass() {
         // #pragma unroll
         for (j = 0; j < NUM_BIN; ++j) {
           if (row_nnz <= range[j]) {
-            index = ax::doAtomicAdd(&local_bin_size[j], 1);
-            bins_view[local_bin_offset[j] + index] = i;
+            index = ax::doAtomicAdd(&shared_bin_size[j], 1);
+            bins_view[shared_bin_offset[j] + index] = i;
             return;
           }
         }
       }
     } else {
       for (Int32 b = 0; b < NUM_BIN; ++b) {
-        local_bin_size[b] = 0;
+        shared_bin_size[b] = 0;
       }
 
       for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
@@ -477,16 +509,16 @@ void ConnectivityMatMul::numericBinningSecondPass() {
           // #pragma unroll
           for (j = 0; j < NUM_BIN; ++j) {
             if (row_nnz <= range[j]) {
-              ax::doAtomicAdd(&local_bin_size[j], 1);
+              ax::doAtomicAdd(&shared_bin_size[j], 1);
               break;
             }
           }
         }
 
         for (Int32 b = 0; b < NUM_BIN; ++b) {
-          local_bin_offset[b] = ax::doAtomicAdd(bin_size_view[b], local_bin_size[b]);
-          local_bin_offset[b] += bin_offset_view[b];
-          local_bin_size[b] = 0;
+          shared_bin_offset[b] = ax::doAtomicAdd(bin_size_view[b], shared_bin_size[b]);
+          shared_bin_offset[b] += bin_offset_view[b];
+          shared_bin_size[b] = 0;
         }
 
         for (Int32 g = 0; g < work_group.nbActiveItem(); ++g) {
@@ -499,8 +531,8 @@ void ConnectivityMatMul::numericBinningSecondPass() {
             // #pragma unroll
             for (j = 0; j < NUM_BIN; ++j) {
               if (row_nnz <= range[j]) {
-                index = ax::doAtomicAdd(&local_bin_size[j], 1);
-                bins_view[local_bin_offset[j] + index] = i;
+                index = ax::doAtomicAdd(&shared_bin_size[j], 1);
+                bins_view[shared_bin_offset[j] + index] = i;
                 return;
               }
             }

@@ -15,6 +15,9 @@
 #include "arcane/core/IndexedItemConnectivityView.h"
 #include "arcane/mesh/ItemFamily.h"
 #include "arcane/utils/MemoryUtils.h"
+#include "connectivix/ConnectivityEWiseMatMul.h"
+#include "connectivix/ConnectivityEWiseMatSub.h"
+#include "connectivix/ConnectivityTranspose.h"
 #include "define.h"
 #include <string>
 #include <vector>
@@ -75,10 +78,31 @@ public:
     const Int32 tCols = getNbRows();
 
     ConnectivityMatrix<ItemType2, ItemType1> *result = new ConnectivityMatrix<ItemType2, ItemType1>(tRows, tCols);
-    if (result->m_data != nullptr) {
-      delete result->m_data;
-    }
     result->m_data = m_data->transpose();
+    // ConnectivityTranspose transpose(*m_data, *result->m_data, runner);
+    // transpose.doTranspose();
+
+    return result;
+  }
+
+  ConnectivityMatrix<ItemType1, ItemType2> *eWiseMatMul(const ConnectivityMatrix<ItemType1, ItemType2> &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<ItemType1, ItemType2> *result = new ConnectivityMatrix<ItemType1, ItemType2>(cRows, cCols);
+    ConnectivityEWiseMatMul eWiseMatMul(*m_data, *bBase.m_data, *result->m_data, runner);
+    eWiseMatMul.doEWiseMatMul();
+
+    return result;
+  }
+
+  ConnectivityMatrix<ItemType1, ItemType2> *eWiseMatSub(const ConnectivityMatrix<ItemType1, ItemType2> &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<ItemType1, ItemType2> *result = new ConnectivityMatrix<ItemType1, ItemType2>(cRows, cCols);
+    ConnectivityEWiseMatSub eWiseMatSub(*m_data, *bBase.m_data, *result->m_data, runner);
+    eWiseMatSub.doEWiseMatSub();
 
     return result;
   }
@@ -90,12 +114,6 @@ public:
   // ConnectivityMatrix<ItemType1, ItemType2>
   // eWiseAdd(const ConnectivityMatrix<ItemType1, ItemType2> &bBase,
   //          bool checkTime);
-  // ConnectivityMatrix<ItemType1, ItemType2>
-  // eWiseSub(const ConnectivityMatrix<ItemType1, ItemType2> &bBase,
-  //          bool checkTime);
-  // ConnectivityMatrix<ItemType1, ItemType2>
-  // eWiseMult(const ConnectivityMatrix<ItemType1, ItemType2> &bBase,
-  //           bool checkTime);
 
   // const ItemVectorBase<ItemType2> rowVector(ItemLocalId1 i);
 

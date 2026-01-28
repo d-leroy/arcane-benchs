@@ -1,11 +1,17 @@
 #include "Metadata.h"
 #include "arcane/accelerator/Runner.h"
+#include "arcane/accelerator/core/DeviceInfo.h"
 #include "define.h"
 
 namespace Connectivix {
 
 Metadata::Metadata(CSR &C, ax::Runner &runner) {
   is_acc = ax::isAcceleratorPolicy(runner.executionPolicy());
+  if (is_acc) {
+    available_shmem = runner.deviceInfo().sharedMemoryPerBlock();
+  } else {
+    available_shmem = -1;
+  }
   allocate_rpt(C);
   run_queues = new Ref<ax::RunQueue>[NUM_BIN];
   for (int i = 0; i < NUM_BIN; ++i) {
@@ -33,15 +39,21 @@ void Metadata::allocate_rpt(CSR &C) {
   }
 }
 
-void Metadata::allocate(ax::Runner &runner) {
+void Metadata::allocate() {
   if (is_acc) {
     bins = new NumArray<Int32, MDDim1>(M, eMemoryRessource::Device);
     bin_size = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::HostPinned);
     bin_offset = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::HostPinned);
+    bins->fill(0, run_queues[0].get());
+    bin_size->fillHost(0);
+    bin_offset->fillHost(0);
   } else {
     bins = new NumArray<Int32, MDDim1>(M, eMemoryRessource::Host);
     bin_size = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::Host);
     bin_offset = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::Host);
+    bins->fillHost(0);
+    bin_size->fillHost(0);
+    bin_offset->fillHost(0);
   }
 }
 
@@ -87,13 +99,23 @@ void Metadata::barrier(const Int32 queue_index) const {
   (*run_queues[queue_index].get()).barrier();
 }
 
-std::string Metadata::printBins() const {
+std::string Metadata::print_bins(NumArray<Int32, MDDim1> &nnz) const {
+  NumArray<Int32, MDDim1> binsCopy(M, eMemoryRessource::Host);
+  NumArray<Int32, MDDim1> nnzCopy(M, eMemoryRessource::Host);
+  binsCopy.copy(*bins);
+  nnzCopy.copy(nnz);
   std::stringstream sstream;
   sstream << "Bins:" << std::endl;
-  for (Int32 i = 0; i < M; ++i) {
-    sstream << (*bins)[i] << " ";
+  for (Int32 binIdx = 0; binIdx < NUM_BIN; ++binIdx) {
+    sstream << "[" << binIdx << "] ";
+    auto from = (*bin_offset)[binIdx];
+    auto to = from + (*bin_size)[binIdx];
+    for (Int32 i = from; i < to; ++i) {
+      sstream << binsCopy[i] << ":" << nnzCopy[binsCopy[i]] << " ";
+    }
+    sstream << std::endl;
   }
-  sstream << std::endl;
+
   return sstream.str();
 }
 

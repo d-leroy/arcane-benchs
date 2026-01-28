@@ -24,18 +24,10 @@
         <nb-part-z>1</nb-part-z>
         <origin>1.0 2.0 3.0</origin>
         <generate-sod-groups>true</generate-sod-groups>
-        <x><n>100</n><length>1.0</length></x>
-        <y><n>15</n><length>0.3</length></y>
-        <z><n>15</n><length>0.3</length></z>
-      </generator>
-      <!-- <generator name="Cartesian2D" >
-        <nb-part-x>1</nb-part-x> 
-        <nb-part-y>1</nb-part-y>
-        <origin>1.0 2.0</origin>
-        <generate-sod-groups>true</generate-sod-groups>
         <x><n>4</n><length>1.0</length></x>
-        <y><n>4</n><length>1.0</length></y>
-      </generator> -->
+        <y><n>4</n><length>0.3</length></y>
+        <z><n>4</n><length>0.3</length></z>
+      </generator>
 
       <initialization>
         <variable><name>Density</name><value>1.0</value><group>ZG</group></variable>
