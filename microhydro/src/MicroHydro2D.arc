@@ -18,24 +18,14 @@
            Si ce n'est pas le cas, il faut desactiver l'option 'check-numerical-result' -->
 
       <ghost-layer-builder-version>4</ghost-layer-builder-version>
-      <generator name="Cartesian3D" >
-        <nb-part-x>1</nb-part-x> 
-        <nb-part-y>1</nb-part-y>
-        <nb-part-z>1</nb-part-z>
-        <origin>1.0 2.0 3.0</origin>
-        <generate-sod-groups>true</generate-sod-groups>
-        <x><n>100</n><length>1.0</length></x>
-        <y><n>15</n><length>0.3</length></y>
-        <z><n>15</n><length>0.3</length></z>
-      </generator>
-      <!-- <generator name="Cartesian2D" >
+      <generator name="Cartesian2D" >
         <nb-part-x>1</nb-part-x> 
         <nb-part-y>1</nb-part-y>
         <origin>1.0 2.0</origin>
         <generate-sod-groups>true</generate-sod-groups>
-        <x><n>4</n><length>1.0</length></x>
-        <y><n>4</n><length>1.0</length></y>
-      </generator> -->
+        <x><n>10</n><length>1.0</length></x>
+        <y><n>10</n><length>1.0</length></y>
+      </generator>
 
       <initialization>
         <variable><name>Density</name><value>1.0</value><group>ZG</group></variable>
@@ -72,12 +62,6 @@
     </boundary-condition>
     <boundary-condition>
       <surface>YMAX</surface><type>Vy</type><value>0.</value>
-    </boundary-condition>
-    <boundary-condition>
-      <surface>ZMIN</surface><type>Vz</type><value>0.</value>
-    </boundary-condition>
-    <boundary-condition>
-      <surface>ZMAX</surface><type>Vz</type><value>0.</value>
     </boundary-condition>
   </micro-hydro>
 </case>

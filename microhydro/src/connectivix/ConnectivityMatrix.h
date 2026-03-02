@@ -15,6 +15,10 @@
 #include "arcane/core/IndexedItemConnectivityView.h"
 #include "arcane/mesh/ItemFamily.h"
 #include "arcane/utils/MemoryUtils.h"
+#include "connectivix/ConnectivityEWiseMatMul.h"
+#include "connectivix/ConnectivityEWiseMatSub.h"
+#include "connectivix/ConnectivityTranspose.h"
+#include "connectivix/ConnectivityVector.h"
 #include "define.h"
 #include <string>
 #include <vector>
@@ -27,6 +31,38 @@ using namespace Arcane;
 namespace ax = Arcane::Accelerator;
 
 namespace Connectivix {
+
+template <typename ItemLocalId1, typename ItemLocalId2> class ConnectivityMatrixView {
+public:
+  template <typename ItemType1, typename ItemType2> friend class ConnectivityMatrix;
+
+public:
+  ConnectivityMatrixView(const Int32 M, const Int32 N, const ax::NumArrayInView<Int32, MDDim1> &in_rpt, const ax::NumArrayInView<Int32, MDDim1> &in_col) : M(M), N(N), in_rpt(in_rpt), in_col(in_col) {}
+
+private:
+  const Int32 M;
+  const Int32 N;
+  const ax::NumArrayInView<Int32, MDDim1> &in_rpt;
+  const ax::NumArrayInView<Int32, MDDim1> &in_col;
+
+public:
+  ARCCORE_HOST_DEVICE inline ConnectivityVectorView<ItemLocalId2> connectedItems(ItemLocalId1 item) const {
+    auto from = in_rpt[item];
+    auto size = in_rpt[item + 1] - from;
+    return ConnectivityVectorView<ItemLocalId2>(in_col.to1DSpan().subSpan(from, size), N);
+  }
+
+  ARCCORE_HOST_DEVICE inline Int32 itemIndexInRow(ItemLocalId1 row, ItemLocalId2 col) const {
+    auto from = in_rpt[row];
+    auto to = in_rpt[row + 1] - from;
+    Int32 result = 0;
+    for (Int32 k = 0; k < to; ++k) {
+      result += (unsigned int)(in_col[from + k] - col) >> 31;
+    }
+    Int32 found = (unsigned int)(result - to) >> 31;
+    return result * found + (1 - found) * -1;
+  }
+};
 
 template <typename ItemType1, typename ItemType2> class ConnectivityMatrix {
 public:
@@ -56,9 +92,6 @@ public:
     m_data->fromCoordinates(I_vector.data(), J_vector.data(), nnz);
   }
 
-  // void clone(const ConnectivityMatrix<ItemType1, ItemType2> &otherBase);
-  // ConnectivityMatrix<ItemType2, ItemType1> transpose(bool checkTime);
-
   template <typename ItemType3> ConnectivityMatrix<ItemType1, ItemType3> *matMul(const ConnectivityMatrix<ItemType2, ItemType3> &bBase, ax::Runner &runner) {
     const Int32 cRows = getNbRows();
     const Int32 cCols = bBase.getNbCols();
@@ -75,10 +108,37 @@ public:
     const Int32 tCols = getNbRows();
 
     ConnectivityMatrix<ItemType2, ItemType1> *result = new ConnectivityMatrix<ItemType2, ItemType1>(tRows, tCols);
-    if (result->m_data != nullptr) {
-      delete result->m_data;
-    }
     result->m_data = m_data->transpose();
+
+    return result;
+  }
+
+  ConnectivityMatrix<ItemType1, ItemType2> *intersect(const ConnectivityMatrix<ItemType1, ItemType2> &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<ItemType1, ItemType2> *result = new ConnectivityMatrix<ItemType1, ItemType2>(cRows, cCols);
+    ConnectivityEWiseMatMul eWiseMatMul(*m_data, *bBase.m_data, *result->m_data, runner);
+    eWiseMatMul.doEWiseMatMul();
+
+    return result;
+  }
+
+  ConnectivityMatrix<ItemType1, ItemType2> *subtract(const ConnectivityMatrix<ItemType1, ItemType2> &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<ItemType1, ItemType2> *result = new ConnectivityMatrix<ItemType1, ItemType2>(cRows, cCols);
+    ConnectivityEWiseMatSub eWiseMatSub(*m_data, *bBase.m_data, *result->m_data, runner);
+    eWiseMatSub.doEWiseMatSub();
+
+    return result;
+  }
+
+  ConnectivityMatrixView<ItemLocalId1, ItemLocalId2> view(ax::RunCommand &command) {
+    auto rpt_view = ax::viewIn(command, *m_data->rpt);
+    auto col_view = ax::viewIn(command, *m_data->col);
+    auto result = ConnectivityMatrixView<ItemLocalId1, ItemLocalId2>(m_data->M, m_data->N, rpt_view, col_view);
 
     return result;
   }
@@ -90,12 +150,6 @@ public:
   // ConnectivityMatrix<ItemType1, ItemType2>
   // eWiseAdd(const ConnectivityMatrix<ItemType1, ItemType2> &bBase,
   //          bool checkTime);
-  // ConnectivityMatrix<ItemType1, ItemType2>
-  // eWiseSub(const ConnectivityMatrix<ItemType1, ItemType2> &bBase,
-  //          bool checkTime);
-  // ConnectivityMatrix<ItemType1, ItemType2>
-  // eWiseMult(const ConnectivityMatrix<ItemType1, ItemType2> &bBase,
-  //           bool checkTime);
 
   // const ItemVectorBase<ItemType2> rowVector(ItemLocalId1 i);
 

@@ -11,6 +11,7 @@
 /*---------------------------------------------------------------------------*/
 /*---------------------------------------------------------------------------*/
 
+#include "connectivix/ConnectivityVector.h"
 #define INCLUDE_EDGES 0
 
 #include <arcane/utils/ApplicationInfo.h>
@@ -30,6 +31,10 @@
 #include <arcane/core/ModuleFactory.h>
 #include <arcane/core/UnstructuredMeshConnectivity.h>
 #include <arcane/core/VariableTypes.h>
+
+#include <arcane/IVariableMng.h>
+#include <arcane/core/PostProcessorWriterBase.h>
+#include <arcane/core/ServiceBuilder.h>
 
 #include <arcane/accelerator/Reduce.h>
 #include <arcane/accelerator/RunCommandEnumerate.h>
@@ -65,6 +70,43 @@ namespace MicroHydro {
 namespace ax = Arcane::Accelerator;
 using namespace Arcane;
 
+/*
+  Ecriture au format ensight dans un ensight.case
+  @dirname sans / par exemple "src"
+  @variables sont les variables du maillage à donner
+  */
+static void _writeEnsight(IMesh *mesh, const String &dirname, const VariableList &variables) {
+  Directory d = mesh->subDomain()->exportDirectory();
+  ServiceBuilder<IPostProcessorWriter> spp(mesh->handle());
+  auto post_processor = spp.createReference("Ensight7PostProcessor"); // autres mais moins bien VtkHdfV2PostProcessor ou Ensight7PostProcessor
+  post_processor->setTimes(UniqueArray<Real>{0.0});                   // Juste pour fixer le pas de temps
+
+  ItemGroupList groups;
+  groups.add(mesh->allCells());
+  groups.add(mesh->allNodes());
+  post_processor->setBaseDirectoryName(d.path() + "/" + dirname);
+
+  VariableNodeInt64 arcane_node_uid(VariableNodeInt64(Arcane::VariableBuildInfo(mesh, "arcane_node_uid", mesh->nodeFamily()->name())));
+  VariableCellInt64 arcane_cell_uid(VariableCellInt64(Arcane::VariableBuildInfo(mesh, "arcane_cell_uid", mesh->cellFamily()->name())));
+
+  ENUMERATE_CELL(icell, mesh->allCells()) {
+    arcane_cell_uid[*icell] = icell->uniqueId();
+  }
+  ENUMERATE_NODE(inode, mesh->allNodes()) {
+    arcane_node_uid[*inode] = inode->uniqueId();
+  }
+
+  VariableList all_variables = variables.clone();
+  all_variables.add(mesh->nodesCoordinates().variable()); // ! Workaround
+  all_variables.add(arcane_cell_uid);
+  all_variables.add(arcane_node_uid);
+
+  post_processor->setVariables(all_variables);
+  post_processor->setGroups(groups);
+  IVariableMng *vm = mesh->subDomain()->variableMng();
+  vm->writePostProcessing(post_processor.get());
+}
+
 /*---------------------------------------------------------------------------*/
 /*---------------------------------------------------------------------------*/
 /*!
@@ -86,6 +128,8 @@ public:
   // soit correcte lors de la capture avec CUDA (sinon on passe par this et
   // cela provoque une erreur mémoire)
   static const Integer MAX_NODE_CELL = 8;
+  static const Integer MAX_FACE_NODE = 4 * 3;
+  static const Integer MAX_OPPOSITE_FACE = 2;
 
 public:
   //! Constructeur
@@ -115,7 +159,7 @@ public:
   void applyEquationOfState();
   void computeDeltaT();
 
-  void _computeNodeIndexInCells();
+  // void _computeNodeIndexInCells();
 
 private:
   ITimeStats *m_time_stats = nullptr;
@@ -204,7 +248,7 @@ void MicroHydroModule::hydroStartInit() {
 
   // Dimensionne les variables tableaux
   m_cell_cqs.resize(8);
-  DO_CALL(_computeNodeIndexInCells);
+  // DO_CALL(_computeNodeIndexInCells);
   DO_CALL(_computeBoundaryMatrices);
 
   // Vérifie que les valeurs initiales sont correctes
@@ -309,7 +353,7 @@ void MicroHydroModule::hydroOnMeshChanged() {
   info() << "Hydro: OnMeshChanged";
 
   m_connectivity_view.setMesh(this->mesh());
-  DO_CALL(_computeNodeIndexInCells);
+  // DO_CALL(_computeNodeIndexInCells);
   DO_CALL(_computeBoundaryMatrices);
 }
 
@@ -325,8 +369,6 @@ void MicroHydroModule::computeForces() {
   Real linear_coef = options()->getViscosityLinearCoef();
   Real quadratic_coef = options()->getViscosityQuadraticCoef();
 
-  // auto cnc = m_connectivity_view.cellNode();
-
   // Calcul de la divergence de la vitesse et de la viscosité scalaire
   {
     auto queue = makeQueue(m_runner);
@@ -338,44 +380,36 @@ void MicroHydroModule::computeForces() {
     auto in_sound_speed = viewIn(command, m_sound_speed);
     auto in_cell_cqs = viewIn(command, m_cell_cqs);
     auto out_cell_viscosity_force = viewOut(command, m_cell_viscosity_force);
-    // command << RUNCOMMAND_ENUMERATE(Cell, cid, allCells()) {
-    //   Real delta_speed = 0.0;
 
-    //   Vector *nodesOfCell = Library::createVector(nbNode());
-    //   nodesOfCell->extractRow(*m_nodesOfCell, cid);
+    auto in_nodes_of_cell = m_nodesOfCell->view(command);
 
-    //   // Vector *facesOfCell = Library::createVector(nbFace());
-    //   // facesOfCell->extractRow(*m_facesOfCell, cid);
+    command << RUNCOMMAND_ENUMERATE(Cell, cid, allCells()) {
+      Real delta_speed = 0.0;
 
-    //   // for (cubool::index node : *nodesOfCell) {
-    //   //   Vector *facesOfNode = Library::createVector(nbFace());
-    //   //   facesOfNode->extractRow(*m_facesOfNode, node);
-    //   //   Vector *facesOfNodeInCell = Library::createVector(nbFace());
-    //   //   facesOfNodeInCell->eWiseMult(*facesOfNode, *facesOfCell, true);
-    //   // }
+      auto nodes = in_nodes_of_cell.connectedItems(cid);
 
-    //   Int32 i = 0;
-    //   for (cubool::index node : *nodesOfCell) {
-    //     // Map to index of node in cell.
-    //     delta_speed += math::dot(in_velocity[NodeLocalId(node)], in_cell_cqs[cid][i]);
-    //     ++i;
-    //   }
-    //   delta_speed /= in_volume[cid];
+      Int32 i = 0;
+      for (auto nid : nodes) {
+        // Map to index of node in cell.
+        delta_speed += math::dot(in_velocity[NodeLocalId(nid)], in_cell_cqs[cid][i]);
+        ++i;
+      }
+      delta_speed /= in_volume[cid];
 
-    //   // Capture uniquement les chocs
-    //   bool shock = (math::min(ARCANE_REAL(0.0), delta_speed) < ARCANE_REAL(0.0));
-    //   if (shock) {
-    //     Real rho = in_density[cid];
-    //     Real sound_speed = in_sound_speed[cid];
-    //     Real dx = in_caracteristic_length[cid];
-    //     Real quadratic_viscosity = rho * dx * dx * delta_speed * delta_speed;
-    //     Real linear_viscosity = -rho * sound_speed * dx * delta_speed;
-    //     Real scalar_viscosity = linear_coef * linear_viscosity + quadratic_coef * quadratic_viscosity;
-    //     out_cell_viscosity_force[cid] = scalar_viscosity;
-    //   } else {
-    //     out_cell_viscosity_force[cid] = 0.0;
-    //   }
-    // };
+      // Capture uniquement les chocs
+      bool shock = (math::min(ARCANE_REAL(0.0), delta_speed) < ARCANE_REAL(0.0));
+      if (shock) {
+        Real rho = in_density[cid];
+        Real sound_speed = in_sound_speed[cid];
+        Real dx = in_caracteristic_length[cid];
+        Real quadratic_viscosity = rho * dx * dx * delta_speed * delta_speed;
+        Real linear_viscosity = -rho * sound_speed * dx * delta_speed;
+        Real scalar_viscosity = linear_coef * linear_viscosity + quadratic_coef * quadratic_viscosity;
+        out_cell_viscosity_force[cid] = scalar_viscosity;
+      } else {
+        out_cell_viscosity_force[cid] = 0.0;
+      }
+    };
   }
 
   constexpr int max_node_cell = MAX_NODE_CELL;
@@ -387,27 +421,24 @@ void MicroHydroModule::computeForces() {
     auto in_cell_cqs = viewIn(command, m_cell_cqs);
     auto out_force = viewOut(command, m_force);
 
-    // command << RUNCOMMAND_ENUMERATE(Node, node, allNodes()) {
-    //   Int32 first_pos = node.localId() * max_node_cell;
-    //   Real3 force;
-    //   Integer index = 0;
+    auto in_cells_of_node = m_cellsOfNode->view(command);
+    auto in_nodes_of_cell = m_nodesOfCell->view(command);
 
-    //   Vector *cellsOfNode = Library::createVector(nbCell());
-    //   cellsOfNode->extractRow(*m_cellsOfNode, node);
+    command << RUNCOMMAND_ENUMERATE(Node, nid, allNodes()) {
+      Real3 force;
 
-    //   for (cubool::index cell : *cellsOfNode) {
-    //     // node index in cell = index of the node in its column vector in
-    //     // nodesOfCell
-    //     Int16 node_index = m_nodesOfCell->getIndexInRow(cell, node);
-    //     CellLocalId cid = CellLocalId(cell);
-    //     Real scalar_viscosity = in_cell_viscosity_force[cid];
-    //     Real pressure = in_pressure[cid];
-    //     force += (pressure + scalar_viscosity) * in_cell_cqs[cid][node_index];
-    //     ++index;
-    //   }
+      auto cells = in_cells_of_node.connectedItems(nid);
 
-    //   out_force[node] = force;
-    // };
+      for (auto cell : cells) {
+        CellLocalId cid(cell);
+        Int16 node_index = in_nodes_of_cell.itemIndexInRow(cid, nid);
+        Real scalar_viscosity = in_cell_viscosity_force[cid];
+        Real pressure = in_pressure[cid];
+        force += (pressure + scalar_viscosity) * in_cell_cqs[cid][node_index];
+      }
+
+      out_force[nid] = force;
+    };
   }
 }
 
@@ -448,22 +479,22 @@ void MicroHydroModule::computeViscosityWork() {
   auto out_viscosity_work = viewOut(command, m_viscosity_work);
   auto in_cell_cqs = viewIn(command, m_cell_cqs);
 
-  // // Calcul du travail des forces de viscosité dans une maille
-  // command << RUNCOMMAND_ENUMERATE(Cell, cid, allCells()) {
-  //   Vector *nodesOfCell = Library::createVector(nbNode());
-  //   nodesOfCell->extractRow(*m_nodesOfCell, cid);
+  auto in_nodes_of_cell = m_nodesOfCell->view(command);
 
-  //   Real work = 0.0;
-  //   Real scalar_viscosity = in_cell_viscosity_force[cid];
-  //   if (!math::isZero(scalar_viscosity)) {
-  //     Integer i = 0;
-  //     for (cubool::index node : *nodesOfCell) {
-  //       work += math::dot(scalar_viscosity * in_cell_cqs[cid][i], in_velocity[NodeLocalId(node)]);
-  //       ++i;
-  //     }
-  //   }
-  //   out_viscosity_work[cid] = work;
-  // };
+  // Calcul du travail des forces de viscosité dans une maille
+  command << RUNCOMMAND_ENUMERATE(Cell, cid, allCells()) {
+    Real work = 0.0;
+    Real scalar_viscosity = in_cell_viscosity_force[cid];
+    if (!math::isZero(scalar_viscosity)) {
+      auto nodes = in_nodes_of_cell.connectedItems(cid);
+      Integer i = 0;
+      for (auto node : nodes) {
+        work += math::dot(scalar_viscosity * in_cell_cqs[cid][i], in_velocity[NodeLocalId(node)]);
+        ++i;
+      }
+    }
+    out_viscosity_work[cid] = work;
+  };
 }
 
 /*---------------------------------------------------------------------------*/
@@ -764,136 +795,144 @@ void MicroHydroModule::computeGeometricValues() {
   auto out_old_volume = viewOut(command, m_old_volume);
   auto out_caracteristic_length = viewOut(command, m_caracteristic_length);
 
-  // command << RUNCOMMAND_ENUMERATE(Cell, cid, allCells()) {
-  //   Vector *nodesOfCell = Library::createVector(nbNode());
-  //   nodesOfCell->extractRow(*m_nodesOfCell, cid);
+  auto in_nodes_of_cell = m_nodesOfCell->view(command);
+  auto in_nodes_of_face = m_nodesOfFace->view(command);
+  auto in_nodes_of_edge = m_nodesOfEdge->view(command);
+  auto in_edges_of_face = m_edgesOfFace->view(command);
+  auto in_faces_of_cell = m_facesOfCell->view(command);
+  auto in_faces_of_node = m_facesOfNode->view(command);
+  auto in_opposite_faces = m_oppositeFaceOfFace->view(command);
 
-  //   Vector *facesOfCell = Library::createVector(nbFace());
-  //   facesOfCell->extractRow(*m_facesOfCell, cid);
+  command << RUNCOMMAND_ENUMERATE(Cell, cid, allCells()) {
+    auto nodes_of_cell = in_nodes_of_cell.connectedItems(cid);
+    auto faces_of_cell = in_faces_of_cell.connectedItems(cid);
 
-  //   Matrix *edgesOfFaceInCell = Library::createMatrix(nbFace(), nbEdge());
-  //   edgesOfFaceInCell->multiply(*m_edgesOfFace, *facesOfCell, false, true);
-  //   Real3 normals[edgesOfFaceInCell->getNbVals()];
+    Integer nb_faces = faces_of_cell.getNbVals();
+    Real3 face_coord[nb_faces]; // Should be a PayloadVector<Face> (in shared memory?)
+    Real3 cell_center(0.0, 0.0, 0.0);
 
-  //   Integer nb_faces = facesOfCell->getNbVals();
-  //   Real3 face_coord[nb_faces];
-  //   Real3 cell_center(0.0, 0.0, 0.0);
-  //   cubool::index face_ids[nb_faces];
+    {
+      // Coordonnées des centres des faces
+      Integer i = 0;
+      for (auto face : faces_of_cell) {
+        auto nodes_of_face = in_nodes_of_face.connectedItems(FaceLocalId(face));
+        Real3 tmp_face_center;
+        for (auto node : nodes_of_face) {
+          Real3 node_coord = in_node_coord[NodeLocalId(node)];
+          tmp_face_center += node_coord;
+        }
+        face_coord[i] = 0.25 * tmp_face_center;
+        i++;
+      }
+    }
 
-  //   {
-  //     // Coordonnées des centres des faces
-  //     Integer i = 0;
-  //     for (cubool::index face : *facesOfCell) {
-  //       Vector *nodesOfFace = Library::createVector(nbNode());
-  //       nodesOfFace->extractRow(*m_nodesOfFace, face);
-  //       Real3 tmp_face_center;
-  //       for (cubool::index node : *nodesOfFace) {
-  //         Real3 node_coord = in_node_coord[NodeLocalId(node)];
-  //         tmp_face_center += node_coord;
-  //       }
-  //       face_coord[i] = 0.25 * tmp_face_center;
-  //       face_ids[i] = face;
-  //       i++;
-  //     }
-  //   }
+    {
+      // Coordonnées du centre de la maille
+      Real3 tmp_cell_center;
+      for (auto node : nodes_of_cell) {
+        tmp_cell_center += in_node_coord[NodeLocalId(node)];
+      }
+      cell_center = 0.125 * tmp_cell_center;
+    }
 
-  //   {
-  //     // Coordonnées du centre de la maille
-  //     Real3 tmp_cell_center;
-  //     for (cubool::index node : *nodesOfCell) {
-  //       tmp_cell_center += in_node_coord[NodeLocalId(node)];
-  //     }
-  //     cell_center = 0.125 * tmp_cell_center;
-  //   }
+    {
+      // Calcule la longueur caractéristique de la maille.
 
-  //   // Calcule la longueur caractéristique de la maille.
-  //   {
-  //     cubool::index firstNodeOfCell = *(nodesOfCell->begin());
+      // On récupère le premier noeud de la maille.
+      auto first_node_in_cell = nodes_of_cell[0];
 
-  //     Vector *facesOfNode = Library::createVector(nbFace());
-  //     facesOfNode->extractRow(*m_facesOfNode, firstNodeOfCell);
-  //     Vector *facesOfNodeInCell = Library::createVector(nbFace());
-  //     facesOfNodeInCell->eWiseMult(*facesOfNode, *facesOfCell, true);
+      // On récupère les faces de ce noeud.
+      auto faces_of_node = in_faces_of_node.connectedItems(NodeLocalId(first_node_in_cell));
+      Int32 faces_array[MAX_FACE_NODE];
+      Connectivix::ConnectivityVectorIntersectionView<FaceLocalId> faces_of_node_in_cell(faces_of_node, faces_of_cell);
 
-  //     Real distances[facesOfNodeInCell->getNbVals()];
-  //     Integer nb_medians = 0;
-  //     cubool::index *face_iterator;
-  //     Vector *oppositeFacesOfFace = Library::createVector(nbFace());
-  //     Vector *oppositeFacesOfFaceInCell = Library::createVector(nbFace());
-  //     for (cubool::index face : *facesOfNodeInCell) {
-  //       oppositeFacesOfFace->extractRow(*m_oppositeFaceOfFace, face);
-  //       oppositeFacesOfFaceInCell->eWiseMult(*oppositeFacesOfFace, *facesOfCell, true);
-  //       cubool::index opposite_face = *(oppositeFacesOfFaceInCell->begin());
+      Real distances[faces_of_node_in_cell.size()]; // TODO: use payload vector based on faces_of_node_in_cell instead (ideally in shared memory)
+      Integer nb_medians = 0;
+      // On itère sur les faces du noeud dans la maille.
+      for (auto face : faces_of_node_in_cell) {
+        // On récupère les faces opposées de la face courante.
+        auto opposite_faces_of_face = in_opposite_faces.connectedItems(FaceLocalId(face));
+        Int32 opposite_faces_array[MAX_OPPOSITE_FACE];
+        Connectivix::ConnectivityVectorIntersectionView<FaceLocalId> opposite_faces_of_face_in_cell(opposite_faces_of_face, faces_of_cell);
+        // On effectue l'intersection avec les faces de la maille pour ne garder que la face opposée de la face courante dans la maille.
+        auto opposite_face = *opposite_faces_of_face_in_cell.begin();
 
-  //       Integer face_idx = m_facesOfCell->getIndexInRow(cid, face);
-  //       Integer opposite_face_idx = m_facesOfCell->getIndexInRow(cid, opposite_face);
+        Integer face_idx = in_faces_of_cell.itemIndexInRow(cid, face);
+        Integer opposite_face_idx = in_faces_of_cell.itemIndexInRow(cid, opposite_face);
 
-  //       Real3 median = face_coord[face_idx] - face_coord[opposite_face_idx];
-  //       distances[nb_medians] = median.normL2();
-  //       nb_medians++;
-  //     }
+        // On calcule la distance entre le centre de la face courante et celui de sa face opposée dans la maille.
+        Real3 median = face_coord[face_idx] - face_coord[opposite_face_idx];
+        distances[nb_medians] = median.normL2();
+        nb_medians++;
+      }
 
-  //     Real dx_numerator = 1.0;
-  //     Real dx_denominator = 0.0;
-  //     for (int i = 0; i < nb_medians - 1; ++i) {
-  //       dx_numerator *= distances[i];
-  //       for (int j = i + 1; j < nb_medians; ++j) {
-  //         dx_denominator += distances[i] * distances[j];
-  //       }
-  //     }
-  //     dx_numerator *= distances[nb_medians - 1];
+      Real dx_numerator = 1.0;
+      Real dx_denominator = 0.0;
+      for (int i = 0; i < nb_medians - 1; ++i) {
+        dx_numerator *= distances[i];
+        for (int j = i + 1; j < nb_medians; ++j) {
+          dx_denominator += distances[i] * distances[j];
+        }
+      }
+      dx_numerator *= distances[nb_medians - 1];
 
-  //     out_caracteristic_length[cid] = dx_numerator / dx_denominator;
-  //   }
+      out_caracteristic_length[cid] = dx_numerator / dx_denominator;
+    }
 
-  //   // Calcule les résultantes aux sommets
-  //   {
-  //     // computeCQs(coord, face_coord, in_out_cell_cqs[cid]);
+    const Real real_1div12 = ARCANE_REAL(1.0) / ARCANE_REAL(12.0);
+    Span<const Real3> out_cqs(in_out_cell_cqs[cid]);
+    // Calcule les résultantes aux sommets
+    {
+      Integer node_idx_in_cell = 0;
+      // On itère sur les noeuds de la maille
+      for (auto node : nodes_of_cell) {
+        // On récupère les faces et les arètes du noeud courant.
+        auto faces_of_node = in_faces_of_node.connectedItems(NodeLocalId(node));
+        auto edges_of_node = in_edges_of_node.connectedItems(NodeLocalId(node));
 
-  //     // This matrix is hypersparse
-  //     Matrix *facesOfEdgesInCell = Library::createMatrix(nbEdge(), nbFace());
+        // On itère sur les faces du noeud.
+        for (auto face : faces_of_node) {
+          Integer face_idx = in_faces_of_cell.itemIndexInRow(face);
+          Real3 centerOfFace = face_coord[face_idx];
 
-  //     Vector *edgesOfNode = Library::createVector(nbEdge());
-  //     Vector *edgesOfFace = Library::createVector(nbEdge());
-  //     Vector *facesOfNode = Library::createVector(nbFace());
+          auto edges_of_face = in_edges_of_face.connectedItems(FaceLocalId(face));
 
-  //     Vector *adjacentEdges = Library::createVector(nbFace());
-  //     Vector *oppositeEdges = Library::createVector(nbFace());
+          // Intersecting the edges of the face and of the node
+          Connectivix::ConnectivityVectorIntersectionView<EdgeLocalId> adjacent_edges(edges_of_face, edges_of_node);
+          // Subtracting the edges of the node from the edges of the face
+          Connectivix::ConnectivityVectorSubtractionView<EdgeLocalId> opposite_edges(edges_of_face, edges_of_node);
 
-  //     for (cubool::index node : *nodesOfCell) {
-  //       facesOfNode->extractRow(*m_facesOfNode, node);
-  //       edgesOfNode->extractRow(*m_edgesOfNode, node);
-  //       for (cubool::index face : *facesOfNode) {
-  //         Integer face_idx = m_facesOfCell->getIndexInRow(cid, face);
-  //         Real3 centerOfFace = face_coord[face_idx];
+          Real3 adjacent_normals;
+          for (auto edge : adjacent_edges) {
+            auto nodes_of_edge = in_nodes_of_edge.connectedItems(edge);
+            adjacent_normals += math::cross(in_node_coord[nodes_of_edge[0]] - face_coord[face], in_node_coord[nodes_of_edge[1]] - face_coord[1]);
+          }
 
-  //         edgesOfFace->extractRow(*m_edgesOfFace, face);
+          Real3 opposite_normals;
+          for (auto edge : opposite_edges) {
+            auto nodes_of_edge = in_nodes_of_edge.connectedItems(edge);
+            opposite_normals += math::cross(in_node_coord[nodes_of_edge[0]] - face_coord[face], in_node_coord[nodes_of_edge[1]] - face_coord[1]);
+          }
 
-  //         // Intersecting the edges of the face and of the node
-  //         adjacentEdges->eWiseMult(*edgesOfFace, *edgesOfNode, true);
-  //         // Subtracting the edges of the node from the edges of the face
-  //         oppositeEdges->eWiseSub(*edgesOfFace, *edgesOfNode, true);
+          out_cqs[node_idx_in_cell] = (adjacent_normals * 5.0 + opposite_normals) * real_1div12;
+        }
+      }
+    }
 
-  //         for (cubool::index edge : *adjacentEdges) {
-  //         }
-  //       }
-  //     }
-  //   }
+    Span<const Real3> in_cqs(in_out_cell_cqs[cid]);
 
-  //   Span<const Real3> in_cqs(in_out_cell_cqs[cid]);
+    // Calcule le volume de la maille
+    {
+      Real volume = 0.0;
+      for (auto node : in_nodes_of_cell) {
+        volume += math::dot(in_node_coord[NodeLocalId(node)], in_cqs[NodeLocalId(node)]);
+      }
+      volume /= 3.0;
 
-  //   // Calcule le volume de la maille
-  //   {
-  //     Real volume = 0.0;
-  //     for (cubool::index node : *nodesOfCell) {
-  //       volume += math::dot(in_node_coord[NodeLocalId(node)], in_cqs[NodeLocalId(node)]);
-  //     }
-  //     volume /= 3.0;
-
-  //     out_old_volume[cid] = in_volume[cid];
-  //     out_volume[cid] = volume;
-  //   }
-  // };
+      out_old_volume[cid] = in_volume[cid];
+      out_volume[cid] = volume;
+    }
+  };
 }
 
 /*---------------------------------------------------------------------------*/
@@ -908,191 +947,130 @@ void MicroHydroModule::hydroInit() {
 /*---------------------------------------------------------------------------*/
 /*---------------------------------------------------------------------------*/
 
-const Connectivix::CSR *assembleCSR(const Int32 M, const Int32 N, const Int32 *rows, const Int32 *cols, const Int32 nnz) {
-  Connectivix::CSR *result = new Connectivix::CSR(M, N);
-  result->fromCoordinates(rows, cols, nnz);
-  return result;
-}
-
 void MicroHydroModule::_computeBoundaryMatrices() {
   if (nbEdge() > 0) {
-    info() << "Computing edges of node: " << nbNode() << " x " << nbEdge();
-
+    info() << "Building edges of node: " << nbNode() << " x " << nbEdge();
     m_edgesOfNode = new Connectivix::ConnectivityMatrix<Node, Edge>(nbNode(), nbEdge());
     m_edgesOfNode->build(m_connectivity_view.nodeEdge(), allNodes());
+    info() << "Number of elements: " << m_edgesOfNode->getNbVals();
+    info();
 
+    info() << "Building nodes of edge: " << nbEdge() << " x " << nbNode();
     m_nodesOfEdge = new Connectivix::ConnectivityMatrix<Edge, Node>(nbEdge(), nbNode());
     m_nodesOfEdge->build(m_connectivity_view.edgeNode(), allEdges());
+    info() << "Number of elements: " << m_nodesOfEdge->getNbVals();
+    info();
 
-    info() << "Number of elements: " << m_edgesOfNode->getNbVals();
-    info() << "Sparsity: " << m_edgesOfNode->getNbVals() / (1.0 * m_edgesOfNode->getNbRows() * m_edgesOfNode->getNbCols());
-
-    info() << "Computing faces of edge: " << nbEdge() << " x " << nbFace();
-
+    info() << "Building faces of edge: " << nbEdge() << " x " << nbFace();
     m_facesOfEdge = new Connectivix::ConnectivityMatrix<Edge, Face>(nbEdge(), nbFace());
     m_facesOfEdge->build(m_connectivity_view.edgeFace(), allEdges());
+    info() << "Number of elements: " << m_facesOfEdge->getNbVals();
+    info();
 
+    info() << "Building edges of face: " << nbFace() << " x " << nbEdge();
     m_edgesOfFace = new Connectivix::ConnectivityMatrix<Face, Edge>(nbFace(), nbEdge());
     m_edgesOfFace->build(m_connectivity_view.faceEdge(), allFaces());
+    info() << "Number of elements: " << m_edgesOfFace->getNbVals();
+    info();
 
-    info() << "Number of elements: " << m_facesOfEdge->getNbVals();
-    info() << "Sparsity: " << m_facesOfEdge->getNbVals() / (1.0 * m_facesOfEdge->getNbRows() * m_facesOfEdge->getNbCols());
   } else {
-    info() << "Computing faces of node: " << nbNode() << " x " << nbFace();
-
+    info() << "Building faces of node: " << nbNode() << " x " << nbFace();
     m_facesOfNode = new Connectivix::ConnectivityMatrix<Node, Face>(nbNode(), nbFace());
     m_facesOfNode->build(m_connectivity_view.nodeFace(), allNodes());
+    info() << "Number of elements: " << m_facesOfNode->getNbVals();
+    info();
 
+    info() << "Building nodes of face: " << nbFace() << " x " << nbNode();
     m_nodesOfFace = new Connectivix::ConnectivityMatrix<Face, Node>(nbFace(), nbNode());
     m_nodesOfFace->build(m_connectivity_view.faceNode(), allFaces());
-
-    info() << "Number of elements: " << m_facesOfNode->getNbVals();
-    info() << "Sparsity: " << m_facesOfNode->getNbVals() / (1.0 * m_facesOfNode->getNbRows() * m_facesOfNode->getNbCols());
+    info() << "Number of elements: " << m_nodesOfFace->getNbVals();
+    info();
   }
 
-  info() << "Computing cells of face: " << nbFace() << " x " << nbCell();
-
+  info() << "Building cells of face: " << nbFace() << " x " << nbCell();
   m_cellsOfFace = new Connectivix::ConnectivityMatrix<Face, Cell>(nbFace(), nbCell());
   m_cellsOfFace->build(m_connectivity_view.faceCell(), allFaces());
+  info() << "Number of elements: " << m_cellsOfFace->getNbVals();
+  info();
 
+  info() << "Building faces of cell: " << nbCell() << " x " << nbFace();
   m_facesOfCell = new Connectivix::ConnectivityMatrix<Cell, Face>(nbCell(), nbFace());
   m_facesOfCell->build(m_connectivity_view.cellFace(), allCells());
-
   info() << "Number of elements: " << m_cellsOfFace->getNbVals();
-  info() << "Sparsity: " << m_cellsOfFace->getNbVals() / (1.0 * m_cellsOfFace->getNbRows() * m_cellsOfFace->getNbCols());
+  info();
 
   if (nbEdge() > 0) {
     info() << "Computing faces of node: " << nbNode() << " x " << nbFace();
-
     m_facesOfNode = m_edgesOfNode->matMul(*m_facesOfEdge, m_runner);
-    m_nodesOfFace = m_edgesOfFace->matMul(*m_nodesOfEdge, m_runner);
-
     info() << "Number of elements: " << m_facesOfNode->getNbVals();
-    info() << "Sparsity: " << m_facesOfNode->getNbVals() / (1.0 * m_facesOfNode->getNbRows() * m_facesOfNode->getNbCols());
+    info();
+
+    info() << "Computing nodes of face: " << nbFace() << " x " << nbNode();
+    m_nodesOfFace = m_edgesOfFace->matMul(*m_nodesOfEdge, m_runner);
+    info() << "Number of elements: " << m_nodesOfFace->getNbVals();
+    info();
+
+    info() << "Building faces of node reference: " << nbNode() << " x " << nbFace();
+    auto facesOfNodeCheck = new Connectivix::ConnectivityMatrix<Node, Face>(nbNode(), nbFace());
+    facesOfNodeCheck->build(m_connectivity_view.nodeFace(), allNodes());
+    info() << "Number of elements: " << facesOfNodeCheck->getNbVals();
+    info();
+
+    info() << "Building nodes of face reference: " << nbFace() << " x " << nbNode();
+    auto nodesOfFaceCheck = new Connectivix::ConnectivityMatrix<Face, Node>(nbFace(), nbNode());
+    nodesOfFaceCheck->build(m_connectivity_view.faceNode(), allFaces());
+    info() << "Number of elements: " << nodesOfFaceCheck->getNbVals();
+    info();
+  }
+
+  {
+    ofstream mtxDump("./mtx/nodes_of_face.mtx");
+    m_nodesOfFace->m_data->dumpMatrix(mtxDump);
+    mtxDump.close();
+  }
+
+  {
+    ofstream mtxDump("./mtx/faces_of_node.mtx");
+    m_facesOfNode->m_data->dumpMatrix(mtxDump);
+    mtxDump.close();
   }
 
   info() << "Computing cells of node: " << nbNode() << " x " << nbCell();
-
   m_cellsOfNode = m_facesOfNode->matMul(*m_cellsOfFace, m_runner);
-  m_nodesOfCell = m_facesOfCell->matMul(*m_nodesOfFace, m_runner);
-
   info() << "Number of elements: " << m_cellsOfNode->getNbVals();
-  info() << "Sparsity: " << m_cellsOfNode->getNbVals() / (1.0 * m_cellsOfNode->getNbRows() * m_cellsOfNode->getNbCols());
+  info();
+
+  info() << "Computing nodes of cell: " << nbCell() << " x " << nbNode();
+  m_nodesOfCell = m_facesOfCell->matMul(*m_nodesOfFace, m_runner);
+  info() << "Number of elements: " << m_cellsOfNode->getNbVals();
+  info();
+
+  info() << "Computing opposite faces: " << nbFace() << " x " << nbFace();
+
+  auto *faceNodeReachability1 = m_nodesOfFace->matMul(*m_facesOfNode, m_runner);
+  info() << "Faces-through-node: " << faceNodeReachability1->getNbVals();
 
   {
-    ofstream cellsOfNodeDump("./mtx/cells_of_node_indirect.mtx");
-    m_cellsOfNode->m_data->dumpMatrix(cellsOfNodeDump);
-    cellsOfNodeDump.close();
+    ofstream mtxDump("./mtx/faces-through-nodes.mtx");
+    faceNodeReachability1->m_data->dumpMatrix(mtxDump);
+    mtxDump.close();
   }
 
+  auto *faceCellReachability1 = m_cellsOfFace->matMul(*m_facesOfCell, m_runner);
+  info() << "Faces-through-cell: " << faceCellReachability1->getNbVals();
+
+  m_oppositeFaceOfFace = faceCellReachability1->subtract(*faceNodeReachability1, m_runner);
   {
-    Connectivix::ConnectivityMatrix<Node, Cell> checkCellsOfNode(nbNode(), nbCell());
-    checkCellsOfNode.build(m_connectivity_view.nodeCell(), allNodes());
-    ofstream cellsOfNodeDump("./mtx/cells_of_node_direct.mtx");
-    checkCellsOfNode.m_data->dumpMatrix(cellsOfNodeDump);
-    cellsOfNodeDump.close();
-  }
-  // Matrix *facesOfCellsOfNode = Library::createMatrix(nbNode(), nbFace());
-  // facesOfCellsOfNode->multiply(*m_cellsOfNode, *m_facesOfCell, true, true);
-
-  // m_nodesOfCellsOfNode = Library::createMatrix(nbNode(), nbNode());
-  // m_nodesOfCellsOfNode->multiply(*facesOfCellsOfNode, *m_nodesOfFace, true, true);
-  // info() << "Number of elements: " << m_nodesOfCellsOfNode->getNbVals();
-  // info() << "Sparsity: " << m_nodesOfCellsOfNode->getNbVals() / (1.0 * m_nodesOfCellsOfNode->getNbRows() * m_nodesOfCellsOfNode->getNbCols());
-
-  // info() << "Computing opposite faces: " << nbFace() << " x " << nbFace();
-  // Matrix *faceNodeReachability1 = Library::createMatrix(nbFace(), nbFace());
-  // faceNodeReachability1->multiply(*m_nodesOfFace, *m_facesOfNode, false,
-  // true);
-
-  // Matrix *faceNodeReachability1Transpose =
-  //     Library::createMatrix(nbFace(), nbFace());
-  // faceNodeReachability1Transpose->transpose(*faceNodeReachability1, true);
-
-  // Matrix *faceNodeReachability2 = Library::createMatrix(nbFace(), nbFace());
-  // faceNodeReachability2->multiply(*faceNodeReachability1,
-  //                                 *faceNodeReachability1Transpose, false,
-  //                                 true);
-
-  // Matrix *faceNodeReachabilityExactly2 =
-  //     Library::createMatrix(nbFace(), nbFace());
-  // faceNodeReachabilityExactly2->eWiseSub(*faceNodeReachability2,
-  //                                        *faceNodeReachability1, true);
-
-  // Matrix *faceCellReachability1 = Library::createMatrix(nbFace(), nbFace());
-  // faceCellReachability1->multiply(*m_cellsOfFace, *m_facesOfCell, false,
-  // true);
-
-  // m_oppositeFaceOfFace = Library::createMatrix(nbFace(), nbFace());
-  // m_oppositeFaceOfFace->eWiseMult(*faceNodeReachabilityExactly2,
-  //                                 *faceCellReachability1, true);
-
-  // info() << "Number of elements: " << m_oppositeFaceOfFace->getNbVals();
-  // info() << "Sparsity: "
-  //        << m_oppositeFaceOfFace->getNbVals() /
-  //               (1.0 * m_oppositeFaceOfFace->getNbRows() *
-  //                m_oppositeFaceOfFace->getNbCols());
-
-  {
-    ofstream nodesOfCellDump("./mtx/nodes_of_cell.mtx");
-    m_nodesOfCell->m_data->dumpMatrix(nodesOfCellDump);
-    nodesOfCellDump.close();
-  }
-  {
-    Connectivix::ConnectivityMatrix<Node, Cell> *transposed = m_nodesOfCell->transpose(m_runner);
-    ofstream nodesOfCellTransposeDump("./mtx/nodes_of_cell_from_transpose.mtx");
-    transposed->m_data->dumpMatrix(nodesOfCellTransposeDump);
-    nodesOfCellTransposeDump.close();
+    ofstream mtxDump("./mtx/opposite-faces-simple.mtx");
+    m_oppositeFaceOfFace->m_data->dumpMatrix(mtxDump);
+    mtxDump.close();
   }
 
-  ofstream facesOfCellDump("./mtx/faces_of_cell.mtx");
-  m_facesOfCell->m_data->dumpMatrix(facesOfCellDump);
-  facesOfCellDump.close();
+  // VariableFaceInt32 faceDistance(VariableNodeInt32(Arcane::VariableBuildInfo(mesh, "face_distance", mesh->faceFamily()->name())));
 
-  if (nbEdge() > 0) {
-    ofstream edgesOfFaceDump("./mtx/edges_of_face.mtx");
-    m_edgesOfFace->m_data->dumpMatrix(edgesOfFaceDump);
-    edgesOfFaceDump.close();
-  }
-}
-
-/*---------------------------------------------------------------------------*/
-/*---------------------------------------------------------------------------*/
-
-void MicroHydroModule::_computeNodeIndexInCells() {
-  info() << "ComputeNodeIndexInCells with accelerator";
-  // Un nœud est connecté au maximum à MAX_NODE_CELL mailles
-  // Calcule pour chaque nœud son index dans chacune des
-  // mailles à laquelle il est connecté.
-  NodeGroup nodes = allNodes();
-  Integer nb_node = nodes.size();
-  m_node_index_in_cells.resize(MAX_NODE_CELL * nb_node);
-
-  auto node_cell_cty = m_connectivity_view.nodeCell();
-  auto cell_node_cty = m_connectivity_view.cellNode();
-
-  auto command = makeCommand(m_default_queue);
-  auto inout_node_index_in_cells = m_node_index_in_cells.span();
-
-  command << RUNCOMMAND_ENUMERATE(Node, node, nodes) {
-    Int32 first_pos = node.localId() * MAX_NODE_CELL;
-
-    Int32 index = 0;
-    for (CellLocalId cell : node_cell_cty.cells(node)) {
-      Int8 node_index_in_cell = 0;
-      for (NodeLocalId cell_node : cell_node_cty.nodes(cell)) {
-        if (cell_node == node)
-          break;
-        ++node_index_in_cell;
-      }
-      inout_node_index_in_cells[first_pos + index] = node_index_in_cell;
-      ++index;
-    }
-
-    // Remplit avec la valeur nulle les derniers éléments
-    for (; index < MAX_NODE_CELL; ++index)
-      inout_node_index_in_cells[first_pos + index] = -1;
-  };
+  // VariableList vl;
+  // vl.add(faceDistance);
+  // _writeEnsight(mesh(), "check-mesh", vl);
 }
 
 /*---------------------------------------------------------------------------*/
