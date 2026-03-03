@@ -24,17 +24,42 @@ namespace ax = Arcane::Accelerator;
 namespace Connectivix {
 
 template <typename ItemLocalId> class ConnectivityVectorView {
+
+public:
+  class ConnectivityVectorIterator {
+    // using iterator_type = ConnectivityVectorView<ItemLocalId>;
+    using iterator_type = Arcane::ArrayIterator<const int *>;
+
+    iterator_type it, it_begin, it_end;
+
+  public:
+    ConnectivityVectorIterator(iterator_type begin, iterator_type end) : it(begin), it_begin(begin), it_end(end) {}
+
+    ConnectivityVectorIterator &operator++() {
+      ++it;
+      return *this;
+    }
+
+    ItemLocalId operator*() const {
+      return ItemLocalId(*it);
+    }
+
+    bool operator!=(const ConnectivityVectorIterator &other) const {
+      return it != other.it;
+    }
+  };
+
 public:
   ARCCORE_HOST_DEVICE ConnectivityVectorView(const ax::NumArrayInView<Int32, MDDim1> &items, const Int32 nb_vals) : nb_vals(nb_vals) {
-    this->items = Span<Int32>(items.to1DSpan());
+    this->items = Span<const Int32>(items.to1DSpan());
   }
-  ARCCORE_HOST_DEVICE ConnectivityVectorView(Span<Int32> &items, const Int32 nb_vals) : items(items), nb_vals(nb_vals) {}
+  ARCCORE_HOST_DEVICE ConnectivityVectorView(Span<const Int32> items, const Int32 nb_vals) : items(items), nb_vals(nb_vals) {}
   ARCCORE_HOST_DEVICE ConnectivityVectorView(Int32 *ptr, const Int32 size, const Int32 nb_vals) : nb_vals(nb_vals) {
     this->items = Span<Int32>(ptr, size);
   }
 
 protected:
-  Span<Int32> &items;
+  Span<const Int32> items;
   const Int32 nb_vals;
 
 public:
@@ -47,31 +72,33 @@ public:
     return result * found + (1 - found) * -1;
   }
 
-  ARCCORE_HOST_DEVICE inline Int32 getNbVals() const {
+  ARCCORE_HOST_DEVICE inline Int32 size() const {
     return nb_vals;
   }
 
   constexpr ARCCORE_HOST_DEVICE auto begin() const noexcept {
-    return items.begin();
+    return ConnectivityVectorIterator(items.begin(), items.end());
   }
 
   constexpr ARCCORE_HOST_DEVICE auto end() const noexcept {
-    return items.end();
+    return ConnectivityVectorIterator(items.end(), items.end());
   }
 
-  constexpr ARCCORE_HOST_DEVICE auto operator[](Int32 i) const {
-    return items[i];
+  constexpr ARCCORE_HOST_DEVICE ItemLocalId operator[](Int32 i) const {
+    return ItemLocalId(items[i]);
   }
 };
 
 template <typename ItemLocalId> class ConnectivityVectorIntersectionView {
 
+public:
   class ConnectivityVectorIntersectionIterator {
-    using iterator_type = ConnectivityVectorView<ItemLocalId>;
+    using iterator_type = typename ConnectivityVectorView<ItemLocalId>::ConnectivityVectorIterator;
+    // using iterator_type = Arcane::ArrayIterator<const int *>;
 
     iterator_type it_a, it_a_begin, it_a_end;
     iterator_type it_b, it_b_begin, it_b_end;
-    int current_value;
+    ItemLocalId current_value;
 
   public:
     ConnectivityVectorIntersectionIterator(iterator_type a_begin, iterator_type a_end, iterator_type b_begin, iterator_type b_end)
@@ -79,7 +106,7 @@ template <typename ItemLocalId> class ConnectivityVectorIntersectionView {
       advance_to_next();
     }
 
-    void advance_to_next() {
+    void ARCCORE_HOST_DEVICE advance_to_next() {
       while (it_a != it_a_end && it_b != it_b_end) {
         if (*it_a == *it_b) {
           current_value = *it_a;
@@ -91,10 +118,10 @@ template <typename ItemLocalId> class ConnectivityVectorIntersectionView {
         }
       }
       // If no more common elements
-      current_value = -1;
+      current_value = ItemLocalId(-1);
     }
 
-    Int32 compute_size() {
+    Int32 ARCCORE_HOST_DEVICE compute_size() {
       Int32 result = 0;
       while (it_a != it_a_end && it_b != it_b_end) {
         if (*it_a == *it_b) {
@@ -110,18 +137,18 @@ template <typename ItemLocalId> class ConnectivityVectorIntersectionView {
       return result;
     }
 
-    ConnectivityVectorIntersectionIterator &operator++() {
+    ConnectivityVectorIntersectionIterator &ARCCORE_HOST_DEVICE operator++() {
       ++it_a;
       ++it_b;
       advance_to_next();
       return *this;
     }
 
-    int operator*() const {
+    ItemLocalId ARCCORE_HOST_DEVICE operator*() const {
       return current_value;
     }
 
-    bool operator!=(const ConnectivityVectorIntersectionIterator &other) const {
+    bool ARCCORE_HOST_DEVICE operator!=(const ConnectivityVectorIntersectionIterator &other) const {
       return (it_a != other.it_a) || (it_b != other.it_b);
     }
   };
@@ -137,23 +164,25 @@ public:
     return ConnectivityVectorIntersectionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end()).compute_size();
   }
 
-  ConnectivityVectorIntersectionIterator begin() const {
+  constexpr ConnectivityVectorIntersectionIterator begin() const noexcept {
     return ConnectivityVectorIntersectionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end());
   }
 
-  ConnectivityVectorIntersectionIterator end() const {
+  constexpr ConnectivityVectorIntersectionIterator end() const noexcept {
     return ConnectivityVectorIntersectionIterator(items_a.end(), items_a.end(), items_b.end(), items_b.end());
   }
 };
 
 template <typename ItemLocalId> class ConnectivityVectorSubtractionView {
 
+public:
   class ConnectivityVectorSubtractionIterator {
-    using iterator_type = ConnectivityVectorView<ItemLocalId>;
+    // using iterator_type = ConnectivityVectorView<ItemLocalId>;
+    using iterator_type = typename ConnectivityVectorView<ItemLocalId>::ConnectivityVectorIterator;
 
     iterator_type it_a, it_a_begin, it_a_end;
     iterator_type it_b, it_b_begin, it_b_end;
-    int current_value;
+    ItemLocalId current_value;
 
   public:
     ConnectivityVectorSubtractionIterator(iterator_type a_begin, iterator_type a_end, iterator_type b_begin, iterator_type b_end)
@@ -162,32 +191,31 @@ template <typename ItemLocalId> class ConnectivityVectorSubtractionView {
     }
 
     void advance_to_next() {
-      while (it_a != it_a_end && it_b != it_b_end) {
-        if (*it_a == *it_b) {
-          ++it_a;
-          ++it_b;
-        } else if (*it_a < *it_b) {
-          current_value = *it_a;
-          return;
+      while (it_a != it_a_end) {
+        if (it_b == it_b_end || *it_a < *it_b) {
+            current_value = *it_a;
+            return;
+        } else if (*it_a == *it_b) {
+            ++it_a;
+            ++it_b;
         } else {
-          ++it_b;
+            ++it_b;
         }
       }
       // If no more common elements
-      current_value = -1;
+      current_value = ItemLocalId(-1);
     }
 
     Int32 compute_size() {
       Int32 result = 0;
-      while (it_a != it_a_end && it_b != it_b_end) {
-        if (*it_a == *it_b) {
-          ++result;
-          ++it_a;
-          ++it_b;
-        } else if (*it_a < *it_b) {
-          ++it_a;
+      while (it_a != it_a_end) {
+        if (it_b == it_b_end || *it_a < *it_b) {
+            ++result;
+        } else if (*it_a == *it_b) {
+            ++it_a;
+            ++it_b;
         } else {
-          ++it_b;
+            ++it_b;
         }
       }
       return result;
@@ -195,17 +223,16 @@ template <typename ItemLocalId> class ConnectivityVectorSubtractionView {
 
     ConnectivityVectorSubtractionIterator &operator++() {
       ++it_a;
-      ++it_b;
       advance_to_next();
       return *this;
     }
 
-    int operator*() const {
+    inline ItemLocalId operator*() const {
       return current_value;
     }
 
     bool operator!=(const ConnectivityVectorSubtractionIterator &other) const {
-      return (it_a != other.it_a) || (it_b != other.it_b);
+      return it_a != other.it_a;
     }
   };
 
@@ -220,11 +247,11 @@ public:
     return ConnectivityVectorSubtractionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end()).compute_size();
   }
 
-  ConnectivityVectorSubtractionIterator begin() const {
+  constexpr ConnectivityVectorSubtractionIterator begin() const noexcept {
     return ConnectivityVectorSubtractionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end());
   }
 
-  ConnectivityVectorSubtractionIterator end() const {
+  constexpr ConnectivityVectorSubtractionIterator end() const noexcept {
     return ConnectivityVectorSubtractionIterator(items_a.end(), items_a.end(), items_b.end(), items_b.end());
   }
 };

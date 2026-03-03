@@ -799,6 +799,7 @@ void MicroHydroModule::computeGeometricValues() {
   auto in_nodes_of_face = m_nodesOfFace->view(command);
   auto in_nodes_of_edge = m_nodesOfEdge->view(command);
   auto in_edges_of_face = m_edgesOfFace->view(command);
+  auto in_edges_of_node = m_edgesOfNode->view(command);
   auto in_faces_of_cell = m_facesOfCell->view(command);
   auto in_faces_of_node = m_facesOfNode->view(command);
   auto in_opposite_faces = m_oppositeFaceOfFace->view(command);
@@ -807,7 +808,7 @@ void MicroHydroModule::computeGeometricValues() {
     auto nodes_of_cell = in_nodes_of_cell.connectedItems(cid);
     auto faces_of_cell = in_faces_of_cell.connectedItems(cid);
 
-    Integer nb_faces = faces_of_cell.getNbVals();
+    Integer nb_faces = faces_of_cell.size();
     Real3 face_coord[nb_faces]; // Should be a PayloadVector<Face> (in shared memory?)
     Real3 cell_center(0.0, 0.0, 0.0);
 
@@ -815,10 +816,10 @@ void MicroHydroModule::computeGeometricValues() {
       // Coordonnées des centres des faces
       Integer i = 0;
       for (auto face : faces_of_cell) {
-        auto nodes_of_face = in_nodes_of_face.connectedItems(FaceLocalId(face));
+        auto nodes_of_face = in_nodes_of_face.connectedItems(face);
         Real3 tmp_face_center;
         for (auto node : nodes_of_face) {
-          Real3 node_coord = in_node_coord[NodeLocalId(node)];
+          Real3 node_coord = in_node_coord[node];
           tmp_face_center += node_coord;
         }
         face_coord[i] = 0.25 * tmp_face_center;
@@ -830,7 +831,7 @@ void MicroHydroModule::computeGeometricValues() {
       // Coordonnées du centre de la maille
       Real3 tmp_cell_center;
       for (auto node : nodes_of_cell) {
-        tmp_cell_center += in_node_coord[NodeLocalId(node)];
+        tmp_cell_center += in_node_coord[node];
       }
       cell_center = 0.125 * tmp_cell_center;
     }
@@ -842,7 +843,7 @@ void MicroHydroModule::computeGeometricValues() {
       auto first_node_in_cell = nodes_of_cell[0];
 
       // On récupère les faces de ce noeud.
-      auto faces_of_node = in_faces_of_node.connectedItems(NodeLocalId(first_node_in_cell));
+      auto faces_of_node = in_faces_of_node.connectedItems(first_node_in_cell);
       Int32 faces_array[MAX_FACE_NODE];
       Connectivix::ConnectivityVectorIntersectionView<FaceLocalId> faces_of_node_in_cell(faces_of_node, faces_of_cell);
 
@@ -851,17 +852,17 @@ void MicroHydroModule::computeGeometricValues() {
       // On itère sur les faces du noeud dans la maille.
       for (auto face : faces_of_node_in_cell) {
         // On récupère les faces opposées de la face courante.
-        auto opposite_faces_of_face = in_opposite_faces.connectedItems(FaceLocalId(face));
+        auto opposite_faces_of_face = in_opposite_faces.connectedItems(face);
         Int32 opposite_faces_array[MAX_OPPOSITE_FACE];
         Connectivix::ConnectivityVectorIntersectionView<FaceLocalId> opposite_faces_of_face_in_cell(opposite_faces_of_face, faces_of_cell);
         // On effectue l'intersection avec les faces de la maille pour ne garder que la face opposée de la face courante dans la maille.
         auto opposite_face = *opposite_faces_of_face_in_cell.begin();
 
-        Integer face_idx = in_faces_of_cell.itemIndexInRow(cid, face);
+        Integer face_cell_idx = in_faces_of_cell.itemIndexInRow(cid, face);
         Integer opposite_face_idx = in_faces_of_cell.itemIndexInRow(cid, opposite_face);
 
         // On calcule la distance entre le centre de la face courante et celui de sa face opposée dans la maille.
-        Real3 median = face_coord[face_idx] - face_coord[opposite_face_idx];
+        Real3 median = face_coord[face_cell_idx] - face_coord[opposite_face_idx];
         distances[nb_medians] = median.normL2();
         nb_medians++;
       }
@@ -880,22 +881,22 @@ void MicroHydroModule::computeGeometricValues() {
     }
 
     const Real real_1div12 = ARCANE_REAL(1.0) / ARCANE_REAL(12.0);
-    Span<const Real3> out_cqs(in_out_cell_cqs[cid]);
+    Span<Real3> out_cqs(in_out_cell_cqs[cid]);
     // Calcule les résultantes aux sommets
     {
       Integer node_idx_in_cell = 0;
       // On itère sur les noeuds de la maille
       for (auto node : nodes_of_cell) {
         // On récupère les faces et les arètes du noeud courant.
-        auto faces_of_node = in_faces_of_node.connectedItems(NodeLocalId(node));
-        auto edges_of_node = in_edges_of_node.connectedItems(NodeLocalId(node));
+        auto faces_of_node = in_faces_of_node.connectedItems(node);
+        auto edges_of_node = in_edges_of_node.connectedItems(node);
 
         // On itère sur les faces du noeud.
         for (auto face : faces_of_node) {
-          Integer face_idx = in_faces_of_cell.itemIndexInRow(face);
-          Real3 centerOfFace = face_coord[face_idx];
+          Integer face_cell_idx = in_faces_of_cell.itemIndexInRow(cid, face);
+          Real3 centerOfFace = face_coord[face_cell_idx];
 
-          auto edges_of_face = in_edges_of_face.connectedItems(FaceLocalId(face));
+          auto edges_of_face = in_edges_of_face.connectedItems(face);
 
           // Intersecting the edges of the face and of the node
           Connectivix::ConnectivityVectorIntersectionView<EdgeLocalId> adjacent_edges(edges_of_face, edges_of_node);
@@ -924,7 +925,8 @@ void MicroHydroModule::computeGeometricValues() {
     // Calcule le volume de la maille
     {
       Real volume = 0.0;
-      for (auto node : in_nodes_of_cell) {
+      auto nodes_of_cell = in_nodes_of_cell.connectedItems(cid);
+      for (auto node : nodes_of_cell) {
         volume += math::dot(in_node_coord[NodeLocalId(node)], in_cqs[NodeLocalId(node)]);
       }
       volume /= 3.0;

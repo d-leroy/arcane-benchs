@@ -22,7 +22,7 @@ namespace Connectivix {
 
 class ConnectivityEWiseMatSub {
 
-  static __device__ Int32 findNearestRowIdx(Int32 value, Int32 range, const Span<const Int32> rowIndex) {
+  static ARCCORE_HOST_DEVICE Int32 findNearestRowIdx(Int32 value, Int32 range, const Span<const Int32> rowIndex) {
     Int32 left = 0;
     Int32 right = range - 1;
 
@@ -46,7 +46,7 @@ class ConnectivityEWiseMatSub {
   }
 
 public:
-  ConnectivityEWiseMatSub(const CSR &A, const CSR &B, CSR &C, ax::Runner &runner) : m_A(A), m_B(B), m_C(C), m_runner(runner) {};
+  ConnectivityEWiseMatSub(const CSR &A, const CSR &B, CSR &C, ax::Runner &runner) : m_A(A), m_B(B), m_C(C), m_runner(runner){};
 
 public:
   void doEWiseMatSub();
