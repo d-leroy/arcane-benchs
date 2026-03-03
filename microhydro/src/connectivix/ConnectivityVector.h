@@ -47,6 +47,10 @@ public:
     bool operator!=(const ConnectivityVectorIterator &other) const {
       return it != other.it;
     }
+
+    bool operator==(const ConnectivityVectorIterator &other) const {
+      return it == other.it;
+    }
   };
 
 public:
@@ -193,13 +197,13 @@ public:
     void advance_to_next() {
       while (it_a != it_a_end) {
         if (it_b == it_b_end || *it_a < *it_b) {
-            current_value = *it_a;
-            return;
+          current_value = *it_a;
+          return;
         } else if (*it_a == *it_b) {
-            ++it_a;
-            ++it_b;
+          ++it_a;
+          ++it_b;
         } else {
-            ++it_b;
+          ++it_b;
         }
       }
       // If no more common elements
@@ -210,12 +214,12 @@ public:
       Int32 result = 0;
       while (it_a != it_a_end) {
         if (it_b == it_b_end || *it_a < *it_b) {
-            ++result;
+          ++result;
         } else if (*it_a == *it_b) {
-            ++it_a;
-            ++it_b;
+          ++it_a;
+          ++it_b;
         } else {
-            ++it_b;
+          ++it_b;
         }
       }
       return result;

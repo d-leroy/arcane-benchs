@@ -11,7 +11,7 @@ void ConnectivityEWiseMatSub::fillIndices(const CSR &m, Span<Int64> &out) {
   auto rptView = (*m.rpt).to1DSpan();
   auto colView = (*m.col).to1DSpan();
 
-  thrust::for_each(thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(m.nnz),
+  thrust::for_each(THRUST_EXEC_POLICY, thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(m.nnz),
                    [rowOffset = rptView, colIndex = colView, outIndices = out, nrows = m.M, ncols = m.N] ARCCORE_HOST_DEVICE(Int32 valueId) {
                      Int32 row = findNearestRowIdx(valueId, nrows, rowOffset);
                      Int32 col = colIndex[valueId];
@@ -37,7 +37,7 @@ void ConnectivityEWiseMatSub::doEWiseMatSub() {
   fillIndices(m_A, inputASpan);
   fillIndices(m_B, inputBSpan);
 
-  auto out = thrust::set_difference(thrust::device, inputASpan.begin(), inputASpan.end(), inputBSpan.begin(), inputBSpan.end(), intersectedSpan.begin());
+  auto out = thrust::set_difference(THRUST_EXEC_POLICY, inputASpan.begin(), inputASpan.end(), inputBSpan.begin(), inputBSpan.end(), intersectedSpan.begin());
 
   // Count result nvals count
   m_C.nnz = thrust::distance(intersectedSpan.begin(), out);
@@ -45,12 +45,12 @@ void ConnectivityEWiseMatSub::doEWiseMatSub() {
   NumArray<Int32, MDDim1> rowOffsetTmp(m_A.M + 1, ACC_MEMORY_RESOURCE);
 
   auto rowOffsetTmpSpan = rowOffsetTmp.to1DSpan();
-  thrust::fill(thrust::device, rowOffsetTmpSpan.begin(), rowOffsetTmpSpan.end(), 0);
+  thrust::fill(THRUST_EXEC_POLICY, rowOffsetTmpSpan.begin(), rowOffsetTmpSpan.end(), 0);
 
   m_C.col = new NumArray<Int32, MDDim1>(m_C.nnz, ACC_MEMORY_RESOURCE);
   auto colIndexSpan = (*m_C.col).to1DSpan();
 
-  thrust::for_each(thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(m_C.nnz),
+  thrust::for_each(THRUST_EXEC_POLICY, thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(m_C.nnz),
                    [rowOffset = rowOffsetTmpSpan, colIndex = colIndexSpan, intersected = intersectedSpan, nrows = m_A.M, ncols = m_A.N] ARCCORE_HOST_DEVICE(Int32 valueId) {
                      Int64 i = intersected[valueId];
                      Int32 row = Int32(i / ncols);
@@ -60,7 +60,7 @@ void ConnectivityEWiseMatSub::doEWiseMatSub() {
                    });
 
   m_C.rpt = new NumArray<Int32, MDDim1>(m_A.M + 1, ACC_MEMORY_RESOURCE);
-  thrust::exclusive_scan(thrust::device, rowOffsetTmpSpan.begin(), rowOffsetTmpSpan.end(), (*m_C.rpt).to1DSpan().begin(), 0, thrust::plus<Int32>());
+  thrust::exclusive_scan(THRUST_EXEC_POLICY, rowOffsetTmpSpan.begin(), rowOffsetTmpSpan.end(), (*m_C.rpt).to1DSpan().begin(), 0, thrust::plus<Int32>());
 }
 
 } // namespace Connectivix

@@ -142,7 +142,7 @@ template <Int32 SH_ROW, Int32 GROUP_SIZE> void ConnectivityMatMul::symbolicShare
           bcol = bcol_view[k];
           hash = (bcol * HASH_SCALE) & (SH_ROW - 1);
           while (1) {
-            old = atomicCAS(&shared_table[hash], -1, bcol);
+            old = ax::doAtomicCAS(&shared_table[hash], -1, bcol);
             if (old == -1) {
               ax::doAtomicAdd(&shared_nnz[0], 1);
               break;

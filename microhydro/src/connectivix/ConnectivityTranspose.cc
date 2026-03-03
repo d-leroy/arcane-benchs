@@ -35,14 +35,14 @@ void ConnectivityTranspose::doTranspose() {
   auto rowIndicesSpan = rowIndices.to1DSpan();
 
   // Compute column indices of the aT for each value of a matrix
-  thrust::for_each(thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(nvals),
+  thrust::for_each(THRUST_EXEC_POLICY, thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(nvals),
                    [aRowIndices = (*aRowIndices).to1DSpan(), nrows, colIndices = colIndicesSpan] ARCCORE_HOST_DEVICE(Int32 valueId) {
                      Int32 rowId = findNearestRowIdx(valueId, nrows, aRowIndices);
                      colIndices[valueId] = rowId;
                    });
 
   // Sort row-col indices
-  thrust::sort_by_key(thrust::device, rowIndicesSpan.begin(), rowIndicesSpan.end(), colIndicesSpan.begin());
+  thrust::sort_by_key(THRUST_EXEC_POLICY, rowIndicesSpan.begin(), rowIndicesSpan.end(), colIndicesSpan.begin());
 
   // Compute row offsets, based on row indices
   m_AT.rpt = new NumArray<Int32, MDDim1>(ncols + 1, ACC_MEMORY_RESOURCE);
@@ -54,10 +54,10 @@ void ConnectivityTranspose::doTranspose() {
   auto rowOffsetsTmpSpan = rowOffsetsTmp.to1DSpan();
   auto rowOffsetsSpan = m_AT.rpt->to1DSpan();
 
-  thrust::for_each(thrust::device, rowIndicesSpan.begin(), rowIndicesSpan.end(),
+  thrust::for_each(THRUST_EXEC_POLICY, rowIndicesSpan.begin(), rowIndicesSpan.end(),
                    [rowOffsetsTmp = rowOffsetsTmpSpan] ARCCORE_HOST_DEVICE(Int32 rowId) { ax::doAtomicAdd(rowOffsetsTmp.ptrAt(rowId), 1); });
 
   // Compute actual offsets
-  thrust::exclusive_scan(thrust::device, rowOffsetsTmpSpan.begin(), rowOffsetsTmpSpan.end(), rowOffsetsSpan.begin(), 0, thrust::plus<Int32>());
+  thrust::exclusive_scan(THRUST_EXEC_POLICY, rowOffsetsTmpSpan.begin(), rowOffsetsTmpSpan.end(), rowOffsetsSpan.begin(), 0, thrust::plus<Int32>());
 }
 } // namespace Connectivix
