@@ -1,4 +1,5 @@
 #include "ConnectivityTranspose.h"
+#include "define.h"
 #include <thrust/count.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
@@ -22,9 +23,9 @@ void ConnectivityTranspose::doTranspose() {
 
   // Create row index and column index to store res matrix
   // Note: transposed matrix has exact the same nnz
-  NumArray<Int32, MDDim1> rowIndices(nvals, eMemoryRessource::Device);
+  NumArray<Int32, MDDim1> rowIndices(nvals, ACC_MEMORY_RESOURCE);
 
-  m_AT.col = new NumArray<Int32, MDDim1>(nvals, eMemoryRessource::Device);
+  m_AT.col = new NumArray<Int32, MDDim1>(nvals, ACC_MEMORY_RESOURCE);
 
   auto colIndicesSpan = m_AT.col->to1DSpan();
 
@@ -44,11 +45,11 @@ void ConnectivityTranspose::doTranspose() {
   thrust::sort_by_key(thrust::device, rowIndicesSpan.begin(), rowIndicesSpan.end(), colIndicesSpan.begin());
 
   // Compute row offsets, based on row indices
-  m_AT.rpt = new NumArray<Int32, MDDim1>(ncols + 1, eMemoryRessource::Device);
+  m_AT.rpt = new NumArray<Int32, MDDim1>(ncols + 1, ACC_MEMORY_RESOURCE);
   m_AT.rpt->fill(0, queue);
   queue.barrier();
 
-  NumArray<Int32, MDDim1> rowOffsetsTmp(ncols + 1, eMemoryRessource::Device);
+  NumArray<Int32, MDDim1> rowOffsetsTmp(ncols + 1, ACC_MEMORY_RESOURCE);
 
   auto rowOffsetsTmpSpan = rowOffsetsTmp.to1DSpan();
   auto rowOffsetsSpan = m_AT.rpt->to1DSpan();

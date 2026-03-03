@@ -1,4 +1,5 @@
 #include "ConnectivityEWiseMatMul.h"
+#include "define.h"
 #include <thrust/count.h>
 #include <thrust/execution_policy.h>
 #include <thrust/fill.h>
@@ -20,17 +21,14 @@ void ConnectivityEWiseMatMul::fillIndices(const CSR &m, Span<Int64> &out) {
 }
 
 void ConnectivityEWiseMatMul::doEWiseMatMul() {
-  const ax::RunQueue queue = ax::makeQueue(m_runner);
-  auto command = makeCommand(queue);
-
   auto aNvals = m_A.nnz;
   auto bNvals = m_B.nnz;
   auto worst = std::min(aNvals, bNvals);
 
   // Allocate memory for the worst case scenario
-  NumArray<Int64, MDDim1> inputA(aNvals, eMemoryRessource::Device);
-  NumArray<Int64, MDDim1> inputB(bNvals, eMemoryRessource::Device);
-  NumArray<Int64, MDDim1> intersected(worst, eMemoryRessource::Device);
+  NumArray<Int64, MDDim1> inputA(aNvals, ACC_MEMORY_RESOURCE);
+  NumArray<Int64, MDDim1> inputB(bNvals, ACC_MEMORY_RESOURCE);
+  NumArray<Int64, MDDim1> intersected(worst, ACC_MEMORY_RESOURCE);
 
   auto inputASpan = inputA.to1DSpan();
   auto inputBSpan = inputB.to1DSpan();
@@ -44,12 +42,12 @@ void ConnectivityEWiseMatMul::doEWiseMatMul() {
   // Count result nvals count
   m_C.nnz = thrust::distance(intersectedSpan.begin(), out);
 
-  NumArray<Int32, MDDim1> rowOffsetTmp(m_A.M + 1, eMemoryRessource::Device);
+  NumArray<Int32, MDDim1> rowOffsetTmp(m_A.M + 1, ACC_MEMORY_RESOURCE);
 
   auto rowOffsetTmpSpan = rowOffsetTmp.to1DSpan();
   thrust::fill(thrust::device, rowOffsetTmpSpan.begin(), rowOffsetTmpSpan.end(), 0);
 
-  m_C.col = new NumArray<Int32, MDDim1>(m_C.nnz, eMemoryRessource::Device);
+  m_C.col = new NumArray<Int32, MDDim1>(m_C.nnz, ACC_MEMORY_RESOURCE);
   auto colIndexSpan = (*m_C.col).to1DSpan();
 
   thrust::for_each(thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(m_C.nnz),
@@ -61,7 +59,7 @@ void ConnectivityEWiseMatMul::doEWiseMatMul() {
                      colIndex[valueId] = col;
                    });
 
-  m_C.rpt = new NumArray<Int32, MDDim1>(m_A.M + 1, eMemoryRessource::Device);
+  m_C.rpt = new NumArray<Int32, MDDim1>(m_A.M + 1, ACC_MEMORY_RESOURCE);
   thrust::exclusive_scan(thrust::device, rowOffsetTmpSpan.begin(), rowOffsetTmpSpan.end(), (*m_C.rpt).to1DSpan().begin(), 0, thrust::plus<Int32>());
 }
 

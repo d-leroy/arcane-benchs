@@ -44,8 +44,6 @@ void ConnectivityMatMul::symbolicBinning() {
     }
 
     symbolicBinningSecondPass();
-
-    std::cout << m_meta->print_bins(*m_C.rpt) << std::endl;
   }
 }
 
@@ -205,7 +203,6 @@ void ConnectivityMatMul::symbolicBinningSecondPass() {
           if (row_nnz <= range[j]) {
             index = ax::doAtomicAdd(shared_bin_size.ptrAt(j), 1);
             bins_view[shared_bin_offset[j] + index] = i;
-            // printf("row_nnz[%d] = %d\n", i, row_nnz);
             return;
           }
         }
@@ -279,8 +276,6 @@ void ConnectivityMatMul::numericBinning() {
     for (int i = 1; i < NUM_BIN; i++) {
       (*m_meta->bin_offset)[i] = m_meta->M;
     }
-
-    std::cout << m_meta->print_bins(*m_C.rpt) << std::endl;
   } else {
     (*m_meta->bin_offset)[0] = 0;
     for (int i = 0; i < NUM_BIN - 1; ++i) {
@@ -292,8 +287,6 @@ void ConnectivityMatMul::numericBinning() {
     }
 
     numericBinningSecondPass();
-
-    std::cout << m_meta->print_bins(*m_C.rpt) << std::endl;
   }
 }
 

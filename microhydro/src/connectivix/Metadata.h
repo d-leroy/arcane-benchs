@@ -42,10 +42,11 @@ public:
   void barrier(const Int32 queue_index) const;
 
   ax::RunQueue &get_run_queue(Int32 queue_index);
-  Int32 get_bin_offset(Int32 bin_index);
-  Int32 get_bin_size(Int32 bin_index);
+  Int32 get_bin_offset(Int32 bin_index) const;
+  Int32 get_bin_size(Int32 bin_index) const;
 
-  std::string print_bins(NumArray<Int32, MDDim1> &nnz) const;
+  std::string print_all_bins(NumArray<Int32, MDDim1> &nnz) const;
+  std::string print_bin(NumArray<Int32, MDDim1> &nnz, Int32 bin_idx) const;
 };
 
 } // namespace Connectivix

@@ -24,9 +24,9 @@
         <nb-part-z>1</nb-part-z>
         <origin>1.0 2.0 3.0</origin>
         <generate-sod-groups>true</generate-sod-groups>
-        <x><n>4</n><length>1.0</length></x>
-        <y><n>4</n><length>0.3</length></y>
-        <z><n>4</n><length>0.3</length></z>
+        <x><n>10</n><length>1.0</length></x>
+        <y><n>10</n><length>1.0</length></y>
+        <z><n>10</n><length>1.0</length></z>
       </generator>
 
       <initialization>

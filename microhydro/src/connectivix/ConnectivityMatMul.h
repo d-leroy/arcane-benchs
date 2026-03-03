@@ -221,6 +221,9 @@ template <int SH_ROW, int GROUP_SIZE> void ConnectivityMatMul::numericSharedHash
   const Int32 bin_offset = m_meta->get_bin_offset(bin_index);
   const Int32 bin_size = m_meta->get_bin_size(bin_index);
 
+  std::cout << " bin offset: " << bin_offset << std::endl;
+  std::cout << " bin size: " << bin_size << std::endl;
+
   auto command = makeCommand(queue);
   auto arpt_view = ax::viewIn(command, *m_A.rpt);
   auto acol_view = ax::viewIn(command, *m_A.col);
@@ -263,7 +266,7 @@ template <int SH_ROW, int GROUP_SIZE> void ConnectivityMatMul::numericSharedHash
       Int32 i = work_item.linearIndex();
 
       Int32 acol, bcol, hash, old;
-      Int32 rid = bins_view[group_rank];
+      Int32 rid = bins_view[bin_offset + group_rank];
       Int32 c_offset = crpt_view[rid];
       Int32 row_nnz = crpt_view[rid + 1] - crpt_view[rid];
 
@@ -315,7 +318,6 @@ template <int SH_ROW, int GROUP_SIZE> void ConnectivityMatMul::numericSharedHash
           // Branchless comparison: increment count only if shared_col[k] < target
           count += (unsigned int)(shared_col[k] - target) >> 31;
         }
-        printf("[%d:%d] offset in row: %d\n", rid, target, count);
 
         ccol_view[c_offset + count] = shared_col[j];
       }

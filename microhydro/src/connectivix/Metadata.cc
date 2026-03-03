@@ -24,7 +24,7 @@ void Metadata::allocate_rpt(CSR &C) {
   M = C.M;
   N = C.N;
   if (is_acc) {
-    C.rpt = new NumArray<Int32, MDDim1>(C.M + 1, eMemoryRessource::Device);
+    C.rpt = new NumArray<Int32, MDDim1>(C.M + 1, ACC_MEMORY_RESOURCE);
     total_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::HostPinned);
     max_row_nnz = new NumArray<Int32, MDDim1>(1, eMemoryRessource::HostPinned);
     scan_storage = C.rpt;
@@ -41,7 +41,7 @@ void Metadata::allocate_rpt(CSR &C) {
 
 void Metadata::allocate() {
   if (is_acc) {
-    bins = new NumArray<Int32, MDDim1>(M, eMemoryRessource::Device);
+    bins = new NumArray<Int32, MDDim1>(M, ACC_MEMORY_RESOURCE);
     bin_size = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::HostPinned);
     bin_offset = new NumArray<Int32, MDDim1>(NUM_BIN, eMemoryRessource::HostPinned);
     bins->fill(0, run_queues[0].get());
@@ -81,11 +81,11 @@ ax::RunQueue &Metadata::get_run_queue(Int32 queue_index) {
   return *(run_queues[queue_index].get());
 }
 
-Int32 Metadata::get_bin_offset(Int32 bin_index) {
+Int32 Metadata::get_bin_offset(Int32 bin_index) const {
   return (*bin_offset)[bin_index];
 }
 
-Int32 Metadata::get_bin_size(Int32 bin_index) {
+Int32 Metadata::get_bin_size(Int32 bin_index) const {
   return (*bin_size)[bin_index];
 }
 
@@ -99,13 +99,12 @@ void Metadata::barrier(const Int32 queue_index) const {
   (*run_queues[queue_index].get()).barrier();
 }
 
-std::string Metadata::print_bins(NumArray<Int32, MDDim1> &nnz) const {
+std::string Metadata::print_all_bins(NumArray<Int32, MDDim1> &nnz) const {
   NumArray<Int32, MDDim1> binsCopy(M, eMemoryRessource::Host);
   NumArray<Int32, MDDim1> nnzCopy(M, eMemoryRessource::Host);
   binsCopy.copy(*bins);
   nnzCopy.copy(nnz);
   std::stringstream sstream;
-  sstream << "Bins:" << std::endl;
   for (Int32 binIdx = 0; binIdx < NUM_BIN; ++binIdx) {
     sstream << "[" << binIdx << "] ";
     auto from = (*bin_offset)[binIdx];
@@ -114,6 +113,22 @@ std::string Metadata::print_bins(NumArray<Int32, MDDim1> &nnz) const {
       sstream << binsCopy[i] << ":" << nnzCopy[binsCopy[i]] << " ";
     }
     sstream << std::endl;
+  }
+
+  return sstream.str();
+}
+
+std::string Metadata::print_bin(NumArray<Int32, MDDim1> &nnz, Int32 bin_idx) const {
+  const Int32 bin_offset = get_bin_offset(bin_idx);
+  const Int32 bin_size = get_bin_size(bin_idx);
+  NumArray<Int32, MDDim1> binsCopy(M, eMemoryRessource::Host);
+  NumArray<Int32, MDDim1> nnzCopy(M, eMemoryRessource::Host);
+  binsCopy.copy(*bins);
+  nnzCopy.copy(nnz);
+  std::stringstream sstream;
+  for (Int32 i = bin_offset; i < bin_offset + bin_size; ++i) {
+    sstream << binsCopy[i] << ":" << nnzCopy[binsCopy[i]] << std::endl;
+    printf("%d:%d\n", binsCopy[i], nnzCopy[binsCopy[i]]);
   }
 
   return sstream.str();

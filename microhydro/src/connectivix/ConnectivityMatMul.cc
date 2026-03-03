@@ -41,7 +41,7 @@ void ConnectivityMatMul::doMatMul() {
   m_C.nnz = (*m_meta->total_nnz)[0];
   printf("nnz: %d\n", m_C.nnz);
   if (is_acc) {
-    m_C.col = new NumArray<Int32, MDDim1>(m_C.nnz, eMemoryRessource::Device);
+    m_C.col = new NumArray<Int32, MDDim1>(m_C.nnz, ACC_MEMORY_RESOURCE);
   } else {
     m_C.col = new NumArray<Int32, MDDim1>(m_C.nnz, eMemoryRessource::Host);
   }
@@ -92,7 +92,6 @@ void ConnectivityMatMul::setup() {
         // printf("[%d] B[%d] = %d; B[%d] = %d; diff = %d\n", j, acol + 1, brpt_view[acol + 1], acol, brpt_view[acol], brpt_view[acol + 1] - brpt_view[acol]);
       }
       row_flop_view[i] = row_flop;
-      // printf("row_flop[%d] = %d\n", i, row_flop_view[i]);
       ax::doAtomic<ax::eAtomicOperation::Max, Int32, Int32>(&shared_max_row_flop[0], row_flop);
 
       work_group.barrier();

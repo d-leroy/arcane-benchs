@@ -30,4 +30,6 @@
 #define THRESH_SCALE 0.8
 #define HASH_SCALE 107
 
+#define ACC_MEMORY_RESOURCE /*eMemoryRessource::Device*/ eMemoryRessource::UnifiedMemory
+
 #endif
