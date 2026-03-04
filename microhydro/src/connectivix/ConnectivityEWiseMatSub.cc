@@ -12,7 +12,7 @@ void ConnectivityEWiseMatSub::fillIndices(const CSR &m, Span<Int64> &out) {
   auto colView = (*m.col).to1DSpan();
 
   thrust::for_each(THRUST_EXEC_POLICY, thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(m.nnz),
-                   [rowOffset = rptView, colIndex = colView, outIndices = out, nrows = m.M, ncols = m.N] ARCCORE_HOST_DEVICE(Int32 valueId) {
+                   [rowOffset = rptView, colIndex = colView, outIndices = out, nrows = m.M, ncols = m.N] ARCCORE_DEVICE(Int32 valueId) {
                      Int32 row = findNearestRowIdx(valueId, nrows, rowOffset);
                      Int32 col = colIndex[valueId];
                      Int64 index = Int64(row) * Int64(ncols) + Int64(col);
@@ -51,7 +51,7 @@ void ConnectivityEWiseMatSub::doEWiseMatSub() {
   auto colIndexSpan = (*m_C.col).to1DSpan();
 
   thrust::for_each(THRUST_EXEC_POLICY, thrust::counting_iterator<Int32>(0), thrust::counting_iterator<Int32>(m_C.nnz),
-                   [rowOffset = rowOffsetTmpSpan, colIndex = colIndexSpan, intersected = intersectedSpan, nrows = m_A.M, ncols = m_A.N] ARCCORE_HOST_DEVICE(Int32 valueId) {
+                   [rowOffset = rowOffsetTmpSpan, colIndex = colIndexSpan, intersected = intersectedSpan, nrows = m_A.M, ncols = m_A.N] ARCCORE_DEVICE(Int32 valueId) {
                      Int64 i = intersected[valueId];
                      Int32 row = Int32(i / ncols);
                      Int32 col = Int32(i % ncols);

@@ -31,6 +31,6 @@
 #define HASH_SCALE 107
 
 #define ACC_MEMORY_RESOURCE /*eMemoryRessource::Device*/ eMemoryRessource::UnifiedMemory
-#define THRUST_EXEC_POLICY /*THRUST_EXEC_POLICY*/ thrust::host
+#define THRUST_EXEC_POLICY /*thrust::host*/ thrust::device
 
 #endif

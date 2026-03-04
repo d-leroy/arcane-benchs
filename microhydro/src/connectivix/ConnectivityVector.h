@@ -23,6 +23,9 @@ namespace ax = Arcane::Accelerator;
 
 namespace Connectivix {
 
+template <typename ItemLocalId> class ConnectivityVectorIntersectionView;
+template <typename ItemLocalId> class ConnectivityVectorSubtractionView;
+
 template <typename ItemLocalId> class ConnectivityVectorView {
 
 public:
@@ -33,22 +36,22 @@ public:
     iterator_type it, it_begin, it_end;
 
   public:
-    ConnectivityVectorIterator(iterator_type begin, iterator_type end) : it(begin), it_begin(begin), it_end(end) {}
+    ARCCORE_HOST_DEVICE ConnectivityVectorIterator(iterator_type begin, iterator_type end) : it(begin), it_begin(begin), it_end(end) {}
 
-    ConnectivityVectorIterator &operator++() {
+    ARCCORE_HOST_DEVICE ConnectivityVectorIterator &operator++() {
       ++it;
       return *this;
     }
 
-    ItemLocalId operator*() const {
+    ARCCORE_HOST_DEVICE ItemLocalId operator*() const {
       return ItemLocalId(*it);
     }
 
-    bool operator!=(const ConnectivityVectorIterator &other) const {
+    ARCCORE_HOST_DEVICE bool operator!=(const ConnectivityVectorIterator &other) const {
       return it != other.it;
     }
 
-    bool operator==(const ConnectivityVectorIterator &other) const {
+    ARCCORE_HOST_DEVICE bool operator==(const ConnectivityVectorIterator &other) const {
       return it == other.it;
     }
   };
@@ -59,7 +62,7 @@ public:
   }
   ARCCORE_HOST_DEVICE ConnectivityVectorView(Span<const Int32> items, const Int32 nb_vals) : items(items), nb_vals(nb_vals) {}
   ARCCORE_HOST_DEVICE ConnectivityVectorView(Int32 *ptr, const Int32 size, const Int32 nb_vals) : nb_vals(nb_vals) {
-    this->items = Span<Int32>(ptr, size);
+    this->items = Span<const Int32>(ptr, size);
   }
 
 protected:
@@ -74,6 +77,14 @@ public:
     }
     Int32 found = (unsigned int)(result - item) >> 31;
     return result * found + (1 - found) * -1;
+  }
+
+  ARCCORE_HOST_DEVICE inline ConnectivityVectorIntersectionView<ItemLocalId> intersect(ConnectivityVectorView<ItemLocalId> &other) const {
+    return ConnectivityVectorIntersectionView<ItemLocalId>(*this, other);
+  }
+
+  ARCCORE_HOST_DEVICE inline ConnectivityVectorSubtractionView<ItemLocalId> subtract(ConnectivityVectorView<ItemLocalId> &other) const {
+    return ConnectivityVectorSubtractionView<ItemLocalId>(*this, other);
   }
 
   ARCCORE_HOST_DEVICE inline Int32 size() const {
@@ -105,12 +116,12 @@ public:
     ItemLocalId current_value;
 
   public:
-    ConnectivityVectorIntersectionIterator(iterator_type a_begin, iterator_type a_end, iterator_type b_begin, iterator_type b_end)
+    ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionIterator(iterator_type a_begin, iterator_type a_end, iterator_type b_begin, iterator_type b_end)
         : it_a(a_begin), it_a_begin(a_begin), it_a_end(a_end), it_b(b_begin), it_b_begin(b_begin), it_b_end(b_end) {
       advance_to_next();
     }
 
-    void ARCCORE_HOST_DEVICE advance_to_next() {
+    ARCCORE_HOST_DEVICE void advance_to_next() {
       while (it_a != it_a_end && it_b != it_b_end) {
         if (*it_a == *it_b) {
           current_value = *it_a;
@@ -125,7 +136,7 @@ public:
       current_value = ItemLocalId(-1);
     }
 
-    Int32 ARCCORE_HOST_DEVICE compute_size() {
+    ARCCORE_HOST_DEVICE Int32 compute_size() {
       Int32 result = 0;
       while (it_a != it_a_end && it_b != it_b_end) {
         if (*it_a == *it_b) {
@@ -141,19 +152,19 @@ public:
       return result;
     }
 
-    ConnectivityVectorIntersectionIterator &ARCCORE_HOST_DEVICE operator++() {
+    ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionIterator &operator++() {
       ++it_a;
       ++it_b;
       advance_to_next();
       return *this;
     }
 
-    ItemLocalId ARCCORE_HOST_DEVICE operator*() const {
+    ARCCORE_HOST_DEVICE ItemLocalId operator*() const {
       return current_value;
     }
 
-    bool ARCCORE_HOST_DEVICE operator!=(const ConnectivityVectorIntersectionIterator &other) const {
-      return (it_a != other.it_a) || (it_b != other.it_b);
+    ARCCORE_HOST_DEVICE bool operator!=(const ConnectivityVectorIntersectionIterator &other) const {
+      return (it_a != other.it_a) && (it_b != other.it_b);
     }
   };
 
@@ -162,17 +173,17 @@ private:
   const ConnectivityVectorView<ItemLocalId> &items_b;
 
 public:
-  ConnectivityVectorIntersectionView(const ConnectivityVectorView<ItemLocalId> &items_a, const ConnectivityVectorView<ItemLocalId> &items_b) : items_a(items_a), items_b(items_b) {}
+  ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionView(const ConnectivityVectorView<ItemLocalId> &items_a, const ConnectivityVectorView<ItemLocalId> &items_b) : items_a(items_a), items_b(items_b) {}
 
-  Arcane::Int32 size() const {
+  ARCCORE_HOST_DEVICE Arcane::Int32 size() const {
     return ConnectivityVectorIntersectionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end()).compute_size();
   }
 
-  constexpr ConnectivityVectorIntersectionIterator begin() const noexcept {
+  constexpr ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionIterator begin() const noexcept {
     return ConnectivityVectorIntersectionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end());
   }
 
-  constexpr ConnectivityVectorIntersectionIterator end() const noexcept {
+  constexpr ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionIterator end() const noexcept {
     return ConnectivityVectorIntersectionIterator(items_a.end(), items_a.end(), items_b.end(), items_b.end());
   }
 };
@@ -189,12 +200,12 @@ public:
     ItemLocalId current_value;
 
   public:
-    ConnectivityVectorSubtractionIterator(iterator_type a_begin, iterator_type a_end, iterator_type b_begin, iterator_type b_end)
+    ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionIterator(iterator_type a_begin, iterator_type a_end, iterator_type b_begin, iterator_type b_end)
         : it_a(a_begin), it_a_begin(a_begin), it_a_end(a_end), it_b(b_begin), it_b_begin(b_begin), it_b_end(b_end) {
       advance_to_next();
     }
 
-    void advance_to_next() {
+    ARCCORE_HOST_DEVICE void advance_to_next() {
       while (it_a != it_a_end) {
         if (it_b == it_b_end || *it_a < *it_b) {
           current_value = *it_a;
@@ -210,7 +221,7 @@ public:
       current_value = ItemLocalId(-1);
     }
 
-    Int32 compute_size() {
+    ARCCORE_HOST_DEVICE Int32 compute_size() {
       Int32 result = 0;
       while (it_a != it_a_end) {
         if (it_b == it_b_end || *it_a < *it_b) {
@@ -225,17 +236,17 @@ public:
       return result;
     }
 
-    ConnectivityVectorSubtractionIterator &operator++() {
+    ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionIterator &operator++() {
       ++it_a;
       advance_to_next();
       return *this;
     }
 
-    inline ItemLocalId operator*() const {
+    ARCCORE_HOST_DEVICE inline ItemLocalId operator*() const {
       return current_value;
     }
 
-    bool operator!=(const ConnectivityVectorSubtractionIterator &other) const {
+    ARCCORE_HOST_DEVICE inline bool operator!=(const ConnectivityVectorSubtractionIterator &other) const {
       return it_a != other.it_a;
     }
   };
@@ -245,17 +256,17 @@ private:
   const ConnectivityVectorView<ItemLocalId> &items_b;
 
 public:
-  ConnectivityVectorSubtractionView(const ConnectivityVectorView<ItemLocalId> &items_a, const ConnectivityVectorView<ItemLocalId> &items_b) : items_a(items_a), items_b(items_b) {}
+  ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionView(const ConnectivityVectorView<ItemLocalId> &items_a, const ConnectivityVectorView<ItemLocalId> &items_b) : items_a(items_a), items_b(items_b) {}
 
-  Arcane::Int32 size() const {
+  ARCCORE_HOST_DEVICE Arcane::Int32 size() const {
     return ConnectivityVectorSubtractionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end()).compute_size();
   }
 
-  constexpr ConnectivityVectorSubtractionIterator begin() const noexcept {
+  constexpr ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionIterator begin() const noexcept {
     return ConnectivityVectorSubtractionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end());
   }
 
-  constexpr ConnectivityVectorSubtractionIterator end() const noexcept {
+  constexpr ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionIterator end() const noexcept {
     return ConnectivityVectorSubtractionIterator(items_a.end(), items_a.end(), items_b.end(), items_b.end());
   }
 };

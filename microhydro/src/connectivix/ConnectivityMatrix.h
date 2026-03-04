@@ -42,8 +42,8 @@ public:
 private:
   const Int32 M;
   const Int32 N;
-  const ax::NumArrayInView<Int32, MDDim1> &in_rpt;
-  const ax::NumArrayInView<Int32, MDDim1> &in_col;
+  const ax::NumArrayInView<Int32, MDDim1> in_rpt;
+  const ax::NumArrayInView<Int32, MDDim1> in_col;
 
 public:
   ARCCORE_HOST_DEVICE inline ConnectivityVectorView<ItemLocalId2> connectedItems(ItemLocalId1 item) const {
