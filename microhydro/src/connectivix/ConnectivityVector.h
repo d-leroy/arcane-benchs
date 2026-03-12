@@ -79,11 +79,11 @@ public:
     return result * found + (1 - found) * -1;
   }
 
-  ARCCORE_HOST_DEVICE inline ConnectivityVectorIntersectionView<ItemLocalId> intersect(ConnectivityVectorView<ItemLocalId> &other) const {
+  ARCCORE_HOST_DEVICE inline ConnectivityVectorIntersectionView<ItemLocalId> intersect(const ConnectivityVectorView<ItemLocalId> &other) const {
     return ConnectivityVectorIntersectionView<ItemLocalId>(*this, other);
   }
 
-  ARCCORE_HOST_DEVICE inline ConnectivityVectorSubtractionView<ItemLocalId> subtract(ConnectivityVectorView<ItemLocalId> &other) const {
+  ARCCORE_HOST_DEVICE inline ConnectivityVectorSubtractionView<ItemLocalId> subtract(const ConnectivityVectorView<ItemLocalId> &other) const {
     return ConnectivityVectorSubtractionView<ItemLocalId>(*this, other);
   }
 
@@ -136,17 +136,19 @@ public:
       current_value = ItemLocalId(-1);
     }
 
-    ARCCORE_HOST_DEVICE Int32 compute_size() {
+    ARCCORE_HOST_DEVICE Int32 compute_size() const {
       Int32 result = 0;
-      while (it_a != it_a_end && it_b != it_b_end) {
-        if (*it_a == *it_b) {
+      iterator_type tmp_it_a = it_a_begin;
+      iterator_type tmp_it_b = it_b_begin;
+      while (tmp_it_a != it_a_end && tmp_it_b != it_b_end) {
+        if (*tmp_it_a == *tmp_it_b) {
           ++result;
-          ++it_a;
-          ++it_b;
-        } else if (*it_a < *it_b) {
-          ++it_a;
+          ++tmp_it_a;
+          ++tmp_it_b;
+        } else if (*tmp_it_a < *tmp_it_b) {
+          ++tmp_it_a;
         } else {
-          ++it_b;
+          ++tmp_it_b;
         }
       }
       return result;

@@ -7,7 +7,6 @@
 namespace Connectivix {
 
 void CSR::fromCoordinates(const Int32 *rows, const Int32 *cols, const Int32 nnz) {
-  // TODO: we build the CSR on CPU, and copy the arrays on the GPU.
   this->nnz = nnz;
   // sort indices by (row,column)
   long *p = new long[nnz];

@@ -46,7 +46,7 @@ private:
   const ax::NumArrayInView<Int32, MDDim1> in_col;
 
 public:
-  ARCCORE_HOST_DEVICE inline ConnectivityVectorView<ItemLocalId2> connectedItems(ItemLocalId1 item) const {
+  ARCCORE_HOST_DEVICE inline const ConnectivityVectorView<ItemLocalId2> connectedItems(ItemLocalId1 item) const {
     auto from = in_rpt[item];
     auto size = in_rpt[item + 1] - from;
     return ConnectivityVectorView<ItemLocalId2>(in_col.to1DSpan().subSpan(from, size), N);
