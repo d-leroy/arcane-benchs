@@ -13,6 +13,7 @@
 #include "connectivix/ConnectivityEWiseMatMul.h"
 #include "connectivix/ConnectivityEWiseMatSub.h"
 #include "define.h"
+#include <concepts>
 
 /*---------------------------------------------------------------------------*/
 /*---------------------------------------------------------------------------*/
@@ -23,253 +24,307 @@ namespace ax = Arcane::Accelerator;
 
 namespace Connectivix {
 
-template <typename ItemLocalId> class ConnectivityVectorIntersectionView;
-template <typename ItemLocalId> class ConnectivityVectorSubtractionView;
+template <typename V>
+concept ConnectivityVectorC = /*std::ranges::range<const V> &&*/ requires(const V &v, typename V::ItemType x, Int32 i) {
+  typename V::ItemType;
+  { v.size() } -> std::convertible_to<Int32>;
+  { v[i] } -> std::convertible_to<const typename V::ItemType>;
+  { v.sorted_at(i) } -> std::convertible_to<const typename V::ItemType>;
+  { v.itemIndex(x) } -> std::convertible_to<int>;
+};
 
-template <typename ItemLocalId> class ConnectivityVectorView {
+template <ConnectivityVectorC L, ConnectivityVectorC R>
+  requires std::same_as<typename L::ItemType, typename R::ItemType>
+struct LazyVectorIntersection {
+  using ItemType = typename L::ItemType;
 
-public:
-  class ConnectivityVectorIterator {
-    // using iterator_type = ConnectivityVectorView<ItemLocalId>;
-    using iterator_type = Arcane::ArrayIterator<const int *>;
+  const L *m_lhs;
+  const R *m_rhs;
 
-    iterator_type it, it_begin, it_end;
+  ARCCORE_HOST_DEVICE LazyVectorIntersection(const L &lhs, const R &rhs) : m_lhs(&lhs), m_rhs(&rhs) {}
 
-  public:
-    ARCCORE_HOST_DEVICE ConnectivityVectorIterator(iterator_type begin, iterator_type end) : it(begin), it_begin(begin), it_end(end) {}
+  struct iterator {
+    const LazyVectorIntersection *parent;
+    Int32 i_lhs;
+    Int32 i_rhs;
 
-    ARCCORE_HOST_DEVICE ConnectivityVectorIterator &operator++() {
-      ++it;
+    ARCCORE_HOST_DEVICE iterator(const LazyVectorIntersection *p, Int32 a, Int32 b) : parent(p), i_lhs(a), i_rhs(b) {
+      advance();
+    }
+
+    ARCCORE_HOST_DEVICE void advance() {
+      auto &lhs = *parent->m_lhs;
+      auto &rhs = *parent->m_rhs;
+
+      while (i_lhs < lhs.size() && i_rhs < rhs.size()) {
+        const auto &va = lhs.sorted_at(i_lhs);
+        const auto &vb = rhs.sorted_at(i_rhs);
+
+        if (va < vb)
+          ++i_lhs;
+        else if (vb < va)
+          ++i_rhs;
+        else
+          return;
+      }
+
+      i_lhs = lhs.size();
+    }
+
+    ARCCORE_HOST_DEVICE const ItemType operator*() const {
+      return parent->m_lhs->sorted_at(i_lhs);
+    }
+
+    ARCCORE_HOST_DEVICE iterator &operator++() {
+      ++i_lhs;
+      ++i_rhs;
+      advance();
       return *this;
     }
 
-    ARCCORE_HOST_DEVICE ItemLocalId operator*() const {
-      return ItemLocalId(*it);
+    ARCCORE_HOST_DEVICE bool operator==(const iterator &o) const {
+      return i_lhs == o.i_lhs;
     }
 
-    ARCCORE_HOST_DEVICE bool operator!=(const ConnectivityVectorIterator &other) const {
-      return it != other.it;
-    }
-
-    ARCCORE_HOST_DEVICE bool operator==(const ConnectivityVectorIterator &other) const {
-      return it == other.it;
+    ARCCORE_HOST_DEVICE bool operator!=(const iterator &o) const {
+      return !(*this == o);
     }
   };
 
-public:
-  ARCCORE_HOST_DEVICE ConnectivityVectorView(const ax::NumArrayInView<Int32, MDDim1> &items, const Int32 nb_vals) : nb_vals(nb_vals) {
-    this->items = Span<const Int32>(items.to1DSpan());
-  }
-  ARCCORE_HOST_DEVICE ConnectivityVectorView(Span<const Int32> items, const Int32 nb_vals) : items(items), nb_vals(nb_vals) {}
-  ARCCORE_HOST_DEVICE ConnectivityVectorView(Int32 *ptr, const Int32 size, const Int32 nb_vals) : nb_vals(nb_vals) {
-    this->items = Span<const Int32>(ptr, size);
+  ARCCORE_HOST_DEVICE auto begin() const {
+    return iterator(this, 0, 0);
   }
 
-protected:
-  Span<const Int32> items;
-  const Int32 nb_vals;
+  ARCCORE_HOST_DEVICE auto end() const {
+    return iterator(this, m_lhs->size(), 0);
+  }
+};
 
-public:
-  ARCCORE_HOST_DEVICE inline Int32 itemIndex(ItemLocalId item) const {
+template <ConnectivityVectorC L, ConnectivityVectorC R>
+  requires std::same_as<typename L::ItemType, typename R::ItemType>
+struct LazyVectorSubtraction {
+  using ItemType = typename L::ItemType;
+
+  const L *m_lhs;
+  const R *m_rhs;
+
+  ARCCORE_HOST_DEVICE LazyVectorSubtraction(const L &lhs, const R &rhs) : m_lhs(&lhs), m_rhs(&rhs) {}
+
+  struct iterator {
+    const LazyVectorSubtraction *parent;
+    Int32 i_lhs;
+    Int32 i_rhs;
+
+    ARCCORE_HOST_DEVICE iterator(const LazyVectorSubtraction *p, Int32 a, Int32 b) : parent(p), i_lhs(a), i_rhs(b) {
+      advance();
+    }
+
+    ARCCORE_HOST_DEVICE void advance() {
+      auto &lhs = *parent->m_lhs;
+      auto &rhs = *parent->m_rhs;
+
+      while (i_lhs < lhs.size()) {
+        const auto &va = lhs.sorted_at(i_lhs);
+        const auto &vb = rhs.sorted_at(i_rhs);
+
+        if (i_rhs == rhs.size() || va < vb) {
+          return;
+        } else if (va == vb) {
+          ++i_lhs;
+          ++i_rhs;
+        } else {
+          ++i_rhs;
+        }
+      }
+
+      i_lhs = lhs.size();
+    }
+
+    ARCCORE_HOST_DEVICE const ItemType &operator*() const {
+      return parent->m_lhs->sorted_at(i_lhs);
+    }
+
+    ARCCORE_HOST_DEVICE iterator &operator++() {
+      ++i_lhs;
+      ++i_rhs;
+      advance();
+      return *this;
+    }
+
+    ARCCORE_HOST_DEVICE bool operator==(const iterator &o) const {
+      return i_lhs == o.i_lhs;
+    }
+
+    ARCCORE_HOST_DEVICE bool operator!=(const iterator &o) const {
+      return !(*this == o);
+    }
+  };
+
+  ARCCORE_HOST_DEVICE auto begin() const {
+    return iterator(this, 0, 0);
+  }
+
+  ARCCORE_HOST_DEVICE auto end() const {
+    return iterator(this, m_lhs->size(), 0);
+  }
+};
+
+template <typename T> struct ConnectivityVector {
+  using ItemType = T;
+
+  Span<const Int32> m_items;
+
+  ARCCORE_HOST_DEVICE ConnectivityVector(Span<const Int32> items) : m_items(items) {}
+
+  ARCCORE_HOST_DEVICE Int32 size() const {
+    return m_items.size();
+  }
+
+  ARCCORE_HOST_DEVICE const ItemType operator[](Int32 i) const {
+    return ItemType(m_items[i]);
+  }
+
+  ARCCORE_HOST_DEVICE const ItemType sorted_at(Int32 i) const {
+    return ItemType(m_items[i]);
+  }
+
+  ARCCORE_HOST_DEVICE int itemIndex(const ItemType &item) const {
     Int32 result = 0;
-    for (Int32 k = 0; k < items.size(); ++k) {
-      result += (unsigned int)(items[k] - item) >> 31;
+    for (Int32 k = 0; k < m_items.size(); ++k) {
+      result += (unsigned int)(m_items[k] - item) >> 31;
     }
     Int32 found = (unsigned int)(result - item) >> 31;
     return result * found + (1 - found) * -1;
   }
 
-  ARCCORE_HOST_DEVICE inline ConnectivityVectorIntersectionView<ItemLocalId> intersect(const ConnectivityVectorView<ItemLocalId> &other) const {
-    return ConnectivityVectorIntersectionView<ItemLocalId>(*this, other);
-  }
+  struct iterator {
+    const ConnectivityVector *parent = nullptr;
+    Int32 idx = 0;
 
-  ARCCORE_HOST_DEVICE inline ConnectivityVectorSubtractionView<ItemLocalId> subtract(const ConnectivityVectorView<ItemLocalId> &other) const {
-    return ConnectivityVectorSubtractionView<ItemLocalId>(*this, other);
-  }
+    ARCCORE_HOST_DEVICE iterator() = default;
+    ARCCORE_HOST_DEVICE iterator(const ConnectivityVector *p, Int32 start) : parent(p), idx(start) {}
 
-  ARCCORE_HOST_DEVICE inline Int32 size() const {
-    return nb_vals;
-  }
-
-  constexpr ARCCORE_HOST_DEVICE auto begin() const noexcept {
-    return ConnectivityVectorIterator(items.begin(), items.end());
-  }
-
-  constexpr ARCCORE_HOST_DEVICE auto end() const noexcept {
-    return ConnectivityVectorIterator(items.end(), items.end());
-  }
-
-  constexpr ARCCORE_HOST_DEVICE ItemLocalId operator[](Int32 i) const {
-    return ItemLocalId(items[i]);
-  }
-};
-
-template <typename ItemLocalId> class ConnectivityVectorIntersectionView {
-
-public:
-  class ConnectivityVectorIntersectionIterator {
-    using iterator_type = typename ConnectivityVectorView<ItemLocalId>::ConnectivityVectorIterator;
-    // using iterator_type = Arcane::ArrayIterator<const int *>;
-
-    iterator_type it_a, it_a_begin, it_a_end;
-    iterator_type it_b, it_b_begin, it_b_end;
-    ItemLocalId current_value;
-
-  public:
-    ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionIterator(iterator_type a_begin, iterator_type a_end, iterator_type b_begin, iterator_type b_end)
-        : it_a(a_begin), it_a_begin(a_begin), it_a_end(a_end), it_b(b_begin), it_b_begin(b_begin), it_b_end(b_end) {
-      advance_to_next();
+    ARCCORE_HOST_DEVICE ItemType operator*() const {
+      return ItemType(parent->m_items[idx]);
     }
 
-    ARCCORE_HOST_DEVICE void advance_to_next() {
-      while (it_a != it_a_end && it_b != it_b_end) {
-        if (*it_a == *it_b) {
-          current_value = *it_a;
-          return;
-        } else if (*it_a < *it_b) {
-          ++it_a;
-        } else {
-          ++it_b;
-        }
-      }
-      // If no more common elements
-      current_value = ItemLocalId(-1);
-    }
-
-    ARCCORE_HOST_DEVICE Int32 compute_size() const {
-      Int32 result = 0;
-      iterator_type tmp_it_a = it_a_begin;
-      iterator_type tmp_it_b = it_b_begin;
-      while (tmp_it_a != it_a_end && tmp_it_b != it_b_end) {
-        if (*tmp_it_a == *tmp_it_b) {
-          ++result;
-          ++tmp_it_a;
-          ++tmp_it_b;
-        } else if (*tmp_it_a < *tmp_it_b) {
-          ++tmp_it_a;
-        } else {
-          ++tmp_it_b;
-        }
-      }
-      return result;
-    }
-
-    ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionIterator &operator++() {
-      ++it_a;
-      ++it_b;
-      advance_to_next();
+    ARCCORE_HOST_DEVICE iterator &operator++() {
+      ++idx;
       return *this;
     }
 
-    ARCCORE_HOST_DEVICE ItemLocalId operator*() const {
-      return current_value;
+    ARCCORE_HOST_DEVICE iterator operator++(int) {
+      iterator tmp = *this;
+      ++(*this);
+      return tmp;
     }
 
-    ARCCORE_HOST_DEVICE bool operator!=(const ConnectivityVectorIntersectionIterator &other) const {
-      return (it_a != other.it_a) && (it_b != other.it_b);
+    ARCCORE_HOST_DEVICE bool operator==(const iterator &o) const {
+      return parent == o.parent && idx == o.idx;
+    }
+
+    ARCCORE_HOST_DEVICE bool operator!=(const iterator &o) const {
+      return !(*this == o);
     }
   };
 
-private:
-  const ConnectivityVectorView<ItemLocalId> &items_a;
-  const ConnectivityVectorView<ItemLocalId> &items_b;
-
-public:
-  ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionView(const ConnectivityVectorView<ItemLocalId> &items_a, const ConnectivityVectorView<ItemLocalId> &items_b) : items_a(items_a), items_b(items_b) {}
-
-  ARCCORE_HOST_DEVICE Arcane::Int32 size() const {
-    return ConnectivityVectorIntersectionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end()).compute_size();
+  ARCCORE_HOST_DEVICE auto begin() const {
+    return iterator(this, 0);
+  }
+  ARCCORE_HOST_DEVICE auto end() const {
+    return iterator(this, m_items.size());
   }
 
-  constexpr ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionIterator begin() const noexcept {
-    return ConnectivityVectorIntersectionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end());
+  template <ConnectivityVectorC Other>
+    requires std::same_as<ItemType, typename Other::ItemType>
+  ARCCORE_HOST_DEVICE auto intersect(const Other &other) const {
+    return LazyVectorIntersection<ConnectivityVector<ItemType>, Other>(*this, other);
   }
 
-  constexpr ARCCORE_HOST_DEVICE ConnectivityVectorIntersectionIterator end() const noexcept {
-    return ConnectivityVectorIntersectionIterator(items_a.end(), items_a.end(), items_b.end(), items_b.end());
+  template <ConnectivityVectorC Other>
+    requires std::same_as<ItemType, typename Other::ItemType>
+  ARCCORE_HOST_DEVICE auto subtract(const Other &other) const {
+    return LazyVectorSubtraction(*this, other);
   }
 };
 
-template <typename ItemLocalId> class ConnectivityVectorSubtractionView {
+template <typename T> struct OrderedConnectivityVector {
+  using ItemType = T;
 
-public:
-  class ConnectivityVectorSubtractionIterator {
-    // using iterator_type = ConnectivityVectorView<ItemLocalId>;
-    using iterator_type = typename ConnectivityVectorView<ItemLocalId>::ConnectivityVectorIterator;
+  Span<const Int32> m_items;
+  Span<const Int32> m_order;
 
-    iterator_type it_a, it_a_begin, it_a_end;
-    iterator_type it_b, it_b_begin, it_b_end;
-    ItemLocalId current_value;
+  ARCCORE_HOST_DEVICE OrderedConnectivityVector(Span<const Int32> items, Span<const Int32> order) : m_items(items), m_order(order) {}
 
-  public:
-    ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionIterator(iterator_type a_begin, iterator_type a_end, iterator_type b_begin, iterator_type b_end)
-        : it_a(a_begin), it_a_begin(a_begin), it_a_end(a_end), it_b(b_begin), it_b_begin(b_begin), it_b_end(b_end) {
-      advance_to_next();
+  ARCCORE_HOST_DEVICE Int32 size() const {
+    return m_order.size();
+  }
+
+  ARCCORE_HOST_DEVICE const ItemType operator[](Int32 i) const {
+    return ItemType(m_items[m_order[i]]);
+  }
+
+  ARCCORE_HOST_DEVICE const ItemType sorted_at(Int32 i) const {
+    return ItemType(m_items[i]);
+  }
+
+  ARCCORE_HOST_DEVICE int itemIndex(const ItemType &item) const {
+    Int32 result = 0;
+    for (Int32 k = 0; k < m_items.size(); ++k) {
+      result += (unsigned int)(m_items[k] - item) >> 31;
+    }
+    Int32 found = (unsigned int)(result - item) >> 31;
+    return m_order[result * found + (1 - found) * -1];
+  }
+
+  struct iterator {
+    const OrderedConnectivityVector *parent = nullptr;
+    Int32 idx = 0;
+
+    ARCCORE_HOST_DEVICE iterator() = default;
+    ARCCORE_HOST_DEVICE iterator(const OrderedConnectivityVector *p, Int32 start) : parent(p), idx(start) {}
+
+    ARCCORE_HOST_DEVICE ItemType operator*() const {
+      return ItemType(parent->m_items[parent->m_order[idx]]);
     }
 
-    ARCCORE_HOST_DEVICE void advance_to_next() {
-      while (it_a != it_a_end) {
-        if (it_b == it_b_end || *it_a < *it_b) {
-          current_value = *it_a;
-          return;
-        } else if (*it_a == *it_b) {
-          ++it_a;
-          ++it_b;
-        } else {
-          ++it_b;
-        }
-      }
-      // If no more common elements
-      current_value = ItemLocalId(-1);
-    }
-
-    ARCCORE_HOST_DEVICE Int32 compute_size() {
-      Int32 result = 0;
-      while (it_a != it_a_end) {
-        if (it_b == it_b_end || *it_a < *it_b) {
-          ++result;
-        } else if (*it_a == *it_b) {
-          ++it_a;
-          ++it_b;
-        } else {
-          ++it_b;
-        }
-      }
-      return result;
-    }
-
-    ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionIterator &operator++() {
-      ++it_a;
-      advance_to_next();
+    ARCCORE_HOST_DEVICE iterator &operator++() {
+      ++idx;
       return *this;
     }
 
-    ARCCORE_HOST_DEVICE inline ItemLocalId operator*() const {
-      return current_value;
+    ARCCORE_HOST_DEVICE iterator operator++(int) {
+      iterator tmp = *this;
+      ++(*this);
+      return tmp;
     }
 
-    ARCCORE_HOST_DEVICE inline bool operator!=(const ConnectivityVectorSubtractionIterator &other) const {
-      return it_a != other.it_a;
+    ARCCORE_HOST_DEVICE bool operator==(const iterator &o) const {
+      return parent == o.parent && idx == o.idx;
+    }
+
+    ARCCORE_HOST_DEVICE bool operator!=(const iterator &o) const {
+      return !(*this == o);
     }
   };
 
-private:
-  const ConnectivityVectorView<ItemLocalId> &items_a;
-  const ConnectivityVectorView<ItemLocalId> &items_b;
-
-public:
-  ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionView(const ConnectivityVectorView<ItemLocalId> &items_a, const ConnectivityVectorView<ItemLocalId> &items_b) : items_a(items_a), items_b(items_b) {}
-
-  ARCCORE_HOST_DEVICE Arcane::Int32 size() const {
-    return ConnectivityVectorSubtractionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end()).compute_size();
+  ARCCORE_HOST_DEVICE auto begin() const {
+    return iterator(this, 0);
+  }
+  ARCCORE_HOST_DEVICE auto end() const {
+    return iterator(this, m_order.size());
   }
 
-  constexpr ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionIterator begin() const noexcept {
-    return ConnectivityVectorSubtractionIterator(items_a.begin(), items_a.end(), items_b.begin(), items_b.end());
+  template <ConnectivityVectorC Other>
+    requires std::same_as<ItemType, typename Other::ItemType>
+  ARCCORE_HOST_DEVICE auto intersect(const Other &other) const {
+    return LazyVectorIntersection(*this, other);
   }
 
-  constexpr ARCCORE_HOST_DEVICE ConnectivityVectorSubtractionIterator end() const noexcept {
-    return ConnectivityVectorSubtractionIterator(items_a.end(), items_a.end(), items_b.end(), items_b.end());
+  template <ConnectivityVectorC Other>
+    requires std::same_as<ItemType, typename Other::ItemType>
+  ARCCORE_HOST_DEVICE auto subtract(const Other &other) const {
+    return LazyVectorSubtraction(*this, other);
   }
 };
 

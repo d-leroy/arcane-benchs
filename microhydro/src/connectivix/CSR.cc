@@ -6,6 +6,21 @@
 
 namespace Connectivix {
 
+class Pair {
+public:
+  long int ind;
+  Int32 val;
+  friend bool operator<=(const Pair &lhs, const Pair &rhs) {
+    return lhs.ind <= rhs.ind;
+  }
+  friend bool operator<(const Pair &lhs, const Pair &rhs) {
+    return lhs.ind < rhs.ind;
+  }
+  friend bool operator>(const Pair &lhs, const Pair &rhs) {
+    return lhs.ind > rhs.ind;
+  }
+};
+
 void CSR::fromCoordinates(const Int32 *rows, const Int32 *cols, const Int32 nnz) {
   this->nnz = nnz;
   // sort indices by (row,column)
@@ -23,6 +38,41 @@ void CSR::fromCoordinates(const Int32 *rows, const Int32 *cols, const Int32 nnz)
     I_[i] = p[i] / N;
     (*col)[i] = p[i] % N;
   }
+  delete[] p;
+
+  // Converting from coordinates to compressed sparse row.
+  rpt = new NumArray<Int32, MDDim1>(M + 1);
+  rpt->fill(0);
+  for (Int32 i = 0; i < nnz; ++i) {
+    (*rpt)[I_[i] + 1]++; // => atomicAdd
+  }
+  for (Int32 i = 1; i <= M; ++i) {
+    (*rpt)[i] += (*rpt)[i - 1];
+  }
+
+  delete[] I_;
+}
+
+void CSR::fromCoordinatesOrdered(const Int32 *rows, const Int32 *cols, const Int32 nnz, Int32 *order) {
+  this->nnz = nnz;
+  // sort indices by (row,column)
+  Pair *p = new Pair[nnz];
+  Int32 *I_ = new Int32[nnz];
+  col = new NumArray<Int32, MDDim1>(nnz);
+
+  for (Int32 i = 0; i < nnz; ++i) {
+    p[i].ind = (long int)N * rows[i] + cols[i];
+    p[i].val = order[i];
+  }
+
+  std::sort(p, p + nnz);
+
+  for (Int32 i = 0; i < nnz; ++i) {
+    I_[i] = p[i].ind / N;
+    (*col)[i] = p[i].ind % N;
+    order[i] = p[i].val;
+  }
+
   delete[] p;
 
   // Converting from coordinates to compressed sparse row.

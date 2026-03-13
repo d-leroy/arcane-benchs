@@ -23,6 +23,7 @@ struct CSR {
   void allocate();
 
   void fromCoordinates(const Int32 *rows, const Int32 *cols, const Int32 nnz);
+  void fromCoordinatesOrdered(const Int32 *rows, const Int32 *cols, const Int32 nnz, Int32 *order);
 
   CSR *transpose() const;
 

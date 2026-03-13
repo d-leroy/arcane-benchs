@@ -20,6 +20,7 @@
 #include "connectivix/ConnectivityTranspose.h"
 #include "connectivix/ConnectivityVector.h"
 #include "define.h"
+#include <concepts>
 #include <string>
 #include <vector>
 
@@ -32,9 +33,36 @@ namespace ax = Arcane::Accelerator;
 
 namespace Connectivix {
 
+template <typename T>
+concept ConnectivityMatrixViewC = requires(const T m, const T::RowType i, const T::ColType j) {
+  typename T::RowType;
+  typename T::ColType;
+  { m.row(i) } -> ConnectivityVectorC;
+  { m.indexInRow(i, j) } -> std::convertible_to<Int32>;
+
+  requires std::same_as<typename decltype(m.row(i))::ItemType, typename T::ColType>;
+};
+
+template <typename T>
+concept ConnectivityMatrixC = requires(const T m, ax::RunCommand &command) {
+  typename T::RowType;
+  typename T::ColType;
+  { m.m_data } -> std::convertible_to<Connectivix::CSR *>;
+  { m.view(command) } -> ConnectivityMatrixViewC;
+
+  requires std::same_as<typename decltype(m.view(command))::RowType, typename T::RowType::LocalIdType>;
+  requires std::same_as<typename decltype(m.view(command))::ColType, typename T::ColType::LocalIdType>;
+};
+
+// template <typename L, typename R>
+// concept Multiplicable = ConnectivityMatrixC<L> && ConnectivityMatrixC<R> && std::same_as<typename L::ColType, typename R::RowType> && requires(L l, R r) {
+//   { l.matMul(r) } -> ConnectivityMatrixC;
+// };
+
 template <typename ItemLocalId1, typename ItemLocalId2> class ConnectivityMatrixView {
 public:
-  template <typename ItemType1, typename ItemType2> friend class ConnectivityMatrix;
+  using RowType = ItemLocalId1;
+  using ColType = ItemLocalId2;
 
 public:
   ConnectivityMatrixView(const Int32 M, const Int32 N, const ax::NumArrayInView<Int32, MDDim1> &in_rpt, const ax::NumArrayInView<Int32, MDDim1> &in_col) : M(M), N(N), in_rpt(in_rpt), in_col(in_col) {}
@@ -46,13 +74,13 @@ private:
   const ax::NumArrayInView<Int32, MDDim1> in_col;
 
 public:
-  ARCCORE_HOST_DEVICE inline const ConnectivityVectorView<ItemLocalId2> connectedItems(ItemLocalId1 item) const {
+  ARCCORE_HOST_DEVICE inline const ConnectivityVector<ColType> row(RowType item) const {
     auto from = in_rpt[item];
     auto size = in_rpt[item + 1] - from;
-    return ConnectivityVectorView<ItemLocalId2>(in_col.to1DSpan().subSpan(from, size), N);
+    return ConnectivityVector<ColType>(in_col.to1DSpan().subSpan(from, size));
   }
 
-  ARCCORE_HOST_DEVICE inline Int32 itemIndexInRow(ItemLocalId1 row, ItemLocalId2 col) const {
+  ARCCORE_HOST_DEVICE inline Int32 indexInRow(RowType row, ColType col) const {
     auto from = in_rpt[row];
     auto to = in_rpt[row + 1] - from;
     Int32 result = 0;
@@ -64,12 +92,48 @@ public:
   }
 };
 
+template <typename ItemLocalId1, typename ItemLocalId2> class OrderedConnectivityMatrixView {
+public:
+  using RowType = ItemLocalId1;
+  using ColType = ItemLocalId2;
+
+public:
+  OrderedConnectivityMatrixView(const Int32 M, const Int32 N, const ax::NumArrayInView<Int32, MDDim1> &in_rpt, const ax::NumArrayInView<Int32, MDDim1> &in_col,
+                                const ax::NumArrayInView<Int32, MDDim1> &in_order)
+      : M(M), N(N), in_rpt(in_rpt), in_col(in_col), in_order(in_order) {}
+
+private:
+  const Int32 M;
+  const Int32 N;
+  const ax::NumArrayInView<Int32, MDDim1> in_rpt;
+  const ax::NumArrayInView<Int32, MDDim1> in_col;
+  const ax::NumArrayInView<Int32, MDDim1> in_order;
+
+public:
+  ARCCORE_HOST_DEVICE inline const OrderedConnectivityVector<ColType> row(RowType item) const {
+    auto from = in_rpt[item];
+    auto size = in_rpt[item + 1] - from;
+    return OrderedConnectivityVector<ColType>(in_col.to1DSpan().subSpan(from, size), in_order.to1DSpan().subSpan(from, size));
+  }
+
+  ARCCORE_HOST_DEVICE inline Int32 indexInRow(RowType row, ColType col) const {
+    auto from = in_rpt[row];
+    auto to = in_rpt[row + 1] - from;
+    Int32 result = 0;
+    for (Int32 k = 0; k < to; ++k) {
+      result += (unsigned int)(in_col[from + k] - col) >> 31;
+    }
+    Int32 found = (unsigned int)(result - to) >> 31;
+    return in_order[result * found + (1 - found) * -1];
+  }
+};
+
 template <typename ItemType1, typename ItemType2> class ConnectivityMatrix {
 public:
-  using ItemType1Type = ItemType1;
-  using ItemType2Type = ItemType2;
-  using ItemLocalId1 = typename ItemType1::LocalIdType;
-  using ItemLocalId2 = typename ItemType2::LocalIdType;
+  using RowType = ItemType1;
+  using ColType = ItemType2;
+  using RowLocalIdType = typename RowType::LocalIdType;
+  using ColLocalIdType = typename ColType::LocalIdType;
 
   ConnectivityMatrix(Int32 M, Int32 N) {
     m_data = new CSR(M, N);
@@ -78,7 +142,7 @@ public:
     delete m_data;
   };
 
-  void build(const IndexedItemConnectivityGenericViewT<ItemType1, ItemType2> from, const ItemGroupT<ItemType1> items) {
+  void build(const IndexedItemConnectivityGenericViewT<RowType, ColType> from, const ItemGroupT<RowType> items) {
     std::vector<Int32> I_vector, J_vector;
     ENUMERATE_ITEM(iitem, items) {
       const auto sourceItemId = *iitem;
@@ -92,98 +156,88 @@ public:
     m_data->fromCoordinates(I_vector.data(), J_vector.data(), nnz);
   }
 
-  template <typename ItemType3> ConnectivityMatrix<ItemType1, ItemType3> *matMul(const ConnectivityMatrix<ItemType2, ItemType3> &bBase, ax::Runner &runner) {
+  template <typename Other>
+    requires std::same_as<ColType, typename Other::RowType> && ConnectivityMatrixC<Other>
+  auto matMul(const Other &bBase, ax::Runner &runner) const {
     const Int32 cRows = getNbRows();
     const Int32 cCols = bBase.getNbCols();
 
-    ConnectivityMatrix<ItemType1, ItemType3> *result = new ConnectivityMatrix<ItemType1, ItemType3>(cRows, cCols);
+    ConnectivityMatrix<RowType, typename Other::ColType> *result = new ConnectivityMatrix<RowType, typename Other::ColType>(cRows, cCols);
     ConnectivityMatMul matMul(*m_data, *bBase.m_data, *result->m_data, runner);
     matMul.doMatMul();
 
     return result;
   }
 
-  ConnectivityMatrix<ItemType2, ItemType1> *transpose(ax::Runner &runner) {
+  ConnectivityMatrix<ColType, RowType> *transpose(ax::Runner &runner) const {
     const Int32 tRows = getNbCols();
     const Int32 tCols = getNbRows();
 
-    ConnectivityMatrix<ItemType2, ItemType1> *result = new ConnectivityMatrix<ItemType2, ItemType1>(tRows, tCols);
+    ConnectivityMatrix<ColType, RowType> *result = new ConnectivityMatrix<ColType, RowType>(tRows, tCols);
     result->m_data = m_data->transpose();
-    // ConnectivityTranspose transpose(*m_data, *result->m_data, runner);
-    // transpose.doTranspose();
 
     return result;
   }
 
-  ConnectivityMatrix<ItemType1, ItemType2> *eWiseMatMul(const ConnectivityMatrix<ItemType1, ItemType2> &bBase, ax::Runner &runner) {
+  template <typename Other>
+    requires std::same_as<RowType, typename Other::RowType> && std::same_as<ColType, typename Other::ColType> && ConnectivityMatrixC<Other>
+  ConnectivityMatrix<RowType, ColType> *eWiseMatMul(const Other &bBase, ax::Runner &runner) const {
     const Int32 cRows = getNbRows();
     const Int32 cCols = bBase.getNbCols();
 
-    ConnectivityMatrix<ItemType1, ItemType2> *result = new ConnectivityMatrix<ItemType1, ItemType2>(cRows, cCols);
+    ConnectivityMatrix<RowType, ColType> *result = new ConnectivityMatrix<RowType, ColType>(cRows, cCols);
     ConnectivityEWiseMatMul eWiseMatMul(*m_data, *bBase.m_data, *result->m_data, runner);
     eWiseMatMul.doEWiseMatMul();
 
     return result;
   }
 
-  ConnectivityMatrix<ItemType1, ItemType2> *eWiseMatSub(const ConnectivityMatrix<ItemType1, ItemType2> &bBase, ax::Runner &runner) {
+  template <typename Other>
+    requires std::same_as<RowType, typename Other::RowType> && std::same_as<ColType, typename Other::ColType> && ConnectivityMatrixC<Other>
+  ConnectivityMatrix<RowType, ColType> *eWiseMatSub(const Other &bBase, ax::Runner &runner) const {
     const Int32 cRows = getNbRows();
     const Int32 cCols = bBase.getNbCols();
 
-    ConnectivityMatrix<ItemType1, ItemType2> *result = new ConnectivityMatrix<ItemType1, ItemType2>(cRows, cCols);
+    ConnectivityMatrix<RowType, ColType> *result = new ConnectivityMatrix<RowType, ColType>(cRows, cCols);
     ConnectivityEWiseMatSub eWiseMatSub(*m_data, *bBase.m_data, *result->m_data, runner);
     eWiseMatSub.doEWiseMatSub();
 
     return result;
   }
 
-  ConnectivityMatrix<ItemType1, ItemType2> *intersect(const ConnectivityMatrix<ItemType1, ItemType2> &bBase, ax::Runner &runner) {
+  template <typename Other>
+    requires std::same_as<RowType, typename Other::RowType> && std::same_as<ColType, typename Other::ColType> && ConnectivityMatrixC<Other>
+  ConnectivityMatrix<RowType, ColType> *intersect(const Other &bBase, ax::Runner &runner) const {
     const Int32 cRows = getNbRows();
     const Int32 cCols = bBase.getNbCols();
 
-    ConnectivityMatrix<ItemType1, ItemType2> *result = new ConnectivityMatrix<ItemType1, ItemType2>(cRows, cCols);
+    ConnectivityMatrix<RowType, ColType> *result = new ConnectivityMatrix<RowType, ColType>(cRows, cCols);
     ConnectivityEWiseMatMul eWiseMatMul(*m_data, *bBase.m_data, *result->m_data, runner);
     eWiseMatMul.doEWiseMatMul();
 
     return result;
   }
 
-  ConnectivityMatrix<ItemType1, ItemType2> *subtract(const ConnectivityMatrix<ItemType1, ItemType2> &bBase, ax::Runner &runner) {
+  template <typename Other>
+    requires std::same_as<RowType, typename Other::RowType> && std::same_as<ColType, typename Other::ColType> && ConnectivityMatrixC<Other>
+  ConnectivityMatrix<RowType, ColType> *subtract(const Other &bBase, ax::Runner &runner) const {
     const Int32 cRows = getNbRows();
     const Int32 cCols = bBase.getNbCols();
 
-    ConnectivityMatrix<ItemType1, ItemType2> *result = new ConnectivityMatrix<ItemType1, ItemType2>(cRows, cCols);
+    ConnectivityMatrix<RowType, ColType> *result = new ConnectivityMatrix<RowType, ColType>(cRows, cCols);
     ConnectivityEWiseMatSub eWiseMatSub(*m_data, *bBase.m_data, *result->m_data, runner);
     eWiseMatSub.doEWiseMatSub();
 
     return result;
   }
 
-  ConnectivityMatrixView<ItemLocalId1, ItemLocalId2> view(ax::RunCommand &command) {
+  ConnectivityMatrixView<RowLocalIdType, ColLocalIdType> view(ax::RunCommand &command) const {
     auto rpt_view = ax::viewIn(command, *m_data->rpt);
     auto col_view = ax::viewIn(command, *m_data->col);
-    auto result = ConnectivityMatrixView<ItemLocalId1, ItemLocalId2>(m_data->M, m_data->N, rpt_view, col_view);
+    auto result = ConnectivityMatrixView<RowLocalIdType, ColLocalIdType>(m_data->M, m_data->N, rpt_view, col_view);
 
     return result;
   }
-
-  // ConnectivityMatrix<ItemType1, ItemType2>
-  // vecMul(const ItemVectorBase<ItemType2> &bBaseDiag, bool checkTime);
-  // TODO: identical to product with single column matrix ?
-
-  // ConnectivityMatrix<ItemType1, ItemType2>
-  // eWiseAdd(const ConnectivityMatrix<ItemType1, ItemType2> &bBase,
-  //          bool checkTime);
-
-  // const ItemVectorBase<ItemType2> rowVector(ItemLocalId1 i);
-
-  // ARCCORE_HOST_DEVICE const ItemIterator<ItemType2> row(ItemLocalId1 i)
-  // const
-  // {
-  //   return ItemIterator<ItemType2>{
-
-  //   };
-  // };
 
   std::string printStorage() const {
     return m_data->printRows() + '\n' + m_data->printCols();
@@ -201,6 +255,148 @@ public:
 
 public:
   Connectivix::CSR *m_data;
+};
+
+template <typename ItemType1, typename ItemType2> class OrderedConnectivityMatrix {
+public:
+  using RowType = ItemType1;
+  using ColType = ItemType2;
+  using RowLocalIdType = typename RowType::LocalIdType;
+  using ColLocalIdType = typename ColType::LocalIdType;
+
+  OrderedConnectivityMatrix(Int32 M, Int32 N) {
+    m_data = new CSR(M, N);
+  };
+  ~OrderedConnectivityMatrix() {
+    delete m_data;
+    delete m_order;
+  };
+
+  void build(const IndexedItemConnectivityGenericViewT<RowType, ColType> from, const ItemGroupT<RowType> items) {
+    std::vector<Int32> I_vector, J_vector, order_vector;
+    ENUMERATE_ITEM(iitem, items) {
+      const auto sourceItemId = *iitem;
+      Int32 idx = 0;
+      for (const auto connectedItem : from.items(iitem)) {
+        I_vector.push_back(sourceItemId.localId());
+        J_vector.push_back(connectedItem.localId());
+        order_vector.push_back(idx);
+        ++idx;
+      }
+    }
+    Int32 nnz = J_vector.size();
+
+    m_data->fromCoordinatesOrdered(I_vector.data(), J_vector.data(), nnz, order_vector.data());
+
+    m_order = new NumArray<Int32, MDDim1>(nnz, m_data->col->memoryResource());
+    Span<const Int32> spanOrder(order_vector.data(), order_vector.size());
+    m_order->copy(spanOrder);
+  }
+
+  template <typename Other>
+    requires std::same_as<ColType, typename Other::RowType> && ConnectivityMatrixC<Other>
+  auto matMul(const Other &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<RowType, typename Other::ColType> *result = new ConnectivityMatrix<RowType, typename Other::ColType>(cRows, cCols);
+    ConnectivityMatMul matMul(*m_data, *bBase.m_data, *result->m_data, runner);
+    matMul.doMatMul();
+
+    return result;
+  }
+
+  ConnectivityMatrix<ColType, RowType> *transpose(ax::Runner &runner) {
+    const Int32 tRows = getNbCols();
+    const Int32 tCols = getNbRows();
+
+    ConnectivityMatrix<ColType, RowType> *result = new ConnectivityMatrix<ColType, RowType>(tRows, tCols);
+    result->m_data = m_data->transpose();
+
+    return result;
+  }
+
+  template <typename Other>
+    requires std::same_as<RowType, typename Other::RowType> && std::same_as<ColType, typename Other::ColType> && ConnectivityMatrixC<Other>
+  ConnectivityMatrix<RowType, ColType> *eWiseMatMul(const Other &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<RowType, ColType> *result = new ConnectivityMatrix<RowType, ColType>(cRows, cCols);
+    ConnectivityEWiseMatMul eWiseMatMul(*m_data, *bBase.m_data, *result->m_data, runner);
+    eWiseMatMul.doEWiseMatMul();
+
+    return result;
+  }
+
+  template <typename Other>
+    requires std::same_as<RowType, typename Other::RowType> && std::same_as<ColType, typename Other::ColType> && ConnectivityMatrixC<Other>
+  ConnectivityMatrix<RowType, ColType> *eWiseMatSub(const Other &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<RowType, ColType> *result = new ConnectivityMatrix<RowType, ColType>(cRows, cCols);
+    ConnectivityEWiseMatSub eWiseMatSub(*m_data, *bBase.m_data, *result->m_data, runner);
+    eWiseMatSub.doEWiseMatSub();
+
+    return result;
+  }
+
+  template <typename Other>
+    requires std::same_as<RowType, typename Other::RowType> && std::same_as<ColType, typename Other::ColType> && ConnectivityMatrixC<Other>
+  ConnectivityMatrix<RowType, ColType> *intersect(const Other &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<RowType, ColType> *result = new ConnectivityMatrix<RowType, ColType>(cRows, cCols);
+    ConnectivityEWiseMatMul eWiseMatMul(*m_data, *bBase.m_data, *result->m_data, runner);
+    eWiseMatMul.doEWiseMatMul();
+
+    return result;
+  }
+
+  template <typename Other>
+    requires std::same_as<RowType, typename Other::RowType> && std::same_as<ColType, typename Other::ColType> && ConnectivityMatrixC<Other>
+  ConnectivityMatrix<RowType, ColType> *subtract(const Other &bBase, ax::Runner &runner) {
+    const Int32 cRows = getNbRows();
+    const Int32 cCols = bBase.getNbCols();
+
+    ConnectivityMatrix<RowType, ColType> *result = new ConnectivityMatrix<RowType, ColType>(cRows, cCols);
+    ConnectivityEWiseMatSub eWiseMatSub(*m_data, *bBase.m_data, *result->m_data, runner);
+    eWiseMatSub.doEWiseMatSub();
+
+    return result;
+  }
+
+  OrderedConnectivityMatrixView<RowLocalIdType, ColLocalIdType> view(ax::RunCommand &command) const {
+    auto rpt_view = ax::viewIn(command, *m_data->rpt);
+    auto col_view = ax::viewIn(command, *m_data->col);
+    auto order_view = ax::viewIn(command, *m_order);
+    auto result = OrderedConnectivityMatrixView<RowLocalIdType, ColLocalIdType>(m_data->M, m_data->N, rpt_view, col_view, order_view);
+
+    return result;
+  }
+
+  std::string printStorage() const {
+    return m_data->printRows() + '\n' + m_data->printCols();
+  }
+
+  Int32 getNbRows() const {
+    return m_data->M;
+  };
+  Int32 getNbCols() const {
+    return m_data->N;
+  };
+  Int32 getNbVals() const {
+    return m_data->nnz;
+  };
+
+  // FIXME: can this be private?
+public:
+  Connectivix::CSR *m_data;
+
+private:
+  NumArray<Int32, MDDim1> *m_order;
 };
 
 } // namespace Connectivix
